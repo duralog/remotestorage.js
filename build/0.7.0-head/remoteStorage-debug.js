@@ -6752,6 +6752,10 @@ define('lib/widget',[
       options = {};
     }
 
+    if(Object.keys(remoteStorage.claimedModules).length === 0) {
+      throw new Error("displayWidget called, but no access claimed! Make sure to call displayWidget after remoteStorage.claimAccess is done.");
+    }
+
     options.getLastSyncAt = function() {
       return sync.lastSyncAt && sync.lastSyncAt.getTime();
     };
@@ -7011,7 +7015,7 @@ define('lib/foreignClient',['./util', './baseClient', './getputdelete', './store
 
 });
 
-define('remoteStorage', [
+define('remoteStorage',[
   'require',
   './lib/widget',
   './lib/store',
@@ -7034,14 +7038,6 @@ define('remoteStorage', [
 
   // Namespace: remoteStorage
   var remoteStorage =  {
-
-    // Property: store
-    // Public access to <store>
-    store: store,
-
-    // Property: i18n
-    // Public access to <i18n>
-    i18n: i18n,
 
     //
     // Method: defineModule
@@ -7124,6 +7120,9 @@ define('remoteStorage', [
         new BaseClient(moduleName, true)
       );
       modules[moduleName] = module;
+      if(typeof(module) !== 'object' || typeof(module.exports) !== 'object') {
+        throw new Error("Invalid module format for module '" + moduleName + "', no 'exports' object returned!");
+      }
       this[moduleName] = module.exports;
     },
 
