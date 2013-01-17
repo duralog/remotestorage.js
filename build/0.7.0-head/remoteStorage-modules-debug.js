@@ -6582,11 +6582,32 @@ define('lib/widget',[
   //
   // See <remoteStorage.displayWidget>
   //
+  //
+  // Event: ready
+  //   Fired when the user has connected and the initial synchronization
+  //   has been performed. After this has fired your app can query and
+  //   display data.
+  //
+  // Event: disconnect
+  //   Fired when the user has clicked the 'disconnect' button and all
+  //   locally cached data has been removed. At this point your app should
+  //   remove all visible user-owned data from the screen and return to
+  //   it's initial state.
+  //
+  // Event: state
+  //   Fired whenever the internal state of the widget changes.
+  //   Apps usually don't need to use this event, it is only included
+  //   for debugging purposes and legacy support.
+  //
+  //   Parameters:
+  //     state - A String. The new state the widget moved into.
+  //
+
 
   
 
   var settings = util.getSettingStore('remotestorage_widget');
-  var events = util.getEventEmitter('ready', 'state');
+  var events = util.getEventEmitter('ready', 'disconnect', 'state');
   var logger = util.getLogger('widget');
 
   // the view.
@@ -6674,6 +6695,7 @@ define('lib/widget',[
     schedule.disable();
     remoteStorage.flushLocal();
     events.emit('state', 'disconnected');
+    events.emit('disconnect');
   }
 
   // destructively parse query string from URI fragment
@@ -6741,7 +6763,7 @@ define('lib/widget',[
 
   function initialSync() {
     setState('busy', true);
-    sync.forceSync().then(function() {
+    sync.fullSync().then(function() {
       schedule.enable();
       events.emit('ready');
     }, handleSyncError);
@@ -7411,24 +7433,6 @@ define('remoteStorage',[
     //   handler   - handler function
     //
     onWidget: widget.on,
-
-    // Method: getWidgetState
-    //
-    // Get the widget state, reflecting the general connection state.
-    //
-    // Defined widget states are:
-    //   anonymous    - initial state
-    //   typing       - userAddress input visible, user typing her address.
-    //   connecting   - pre-authentication, webfinger discovery.
-    //   authing      - about to redirect to the auth endpoint (if authDialog=popup,
-    //                  means the popup is open)
-    //   connected    - Discovery & Auth done, connected to remotestorage.
-    //   busy         - Currently exchaning data. (spinning cube)
-    //   disconnected - fired, when user clicks 'disconnect'. use this to clear your
-    //                  app's views of the data. immediately transitions to 'anonymous'
-    //                  afterwards.
-    //
-    getWidgetState: widget.getState,
 
     //
     getSyncState: sync.getState,
