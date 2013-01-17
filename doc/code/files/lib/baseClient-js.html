@@ -82,7 +82,7 @@ fileReader.onload = function() {
   client.storeFile(file.type, file.name, fileReader.result);
 };
 
-fileReader.readAsArrayBuffer(file);</pre></blockquote></div></div></div>
+fileReader.readAsArrayBuffer(file);</pre></blockquote><p>Please keep in mind that the storage adapter used may limit the size of files that can be stored in cache.&nbsp; The current default is localStorage, which places a very tight limit due to constraints enforced by browsers and the necessity of base64 encoding binary data.</p></div></div></div>
 
 <div class="CFunction"><div class=CTopic><h3 class=CTitle><a name="BaseClient.storeDocument"></a>storeDocument</h3><div class=CBody><blockquote><table border=0 cellspacing=0 cellpadding=0 class="Prototype"><tr><td class="prettyprint">storeDocument: function()</td></tr></table></blockquote><p>DEPRECATED in favor of <a href="#BaseClient.storeFile" class=LFunction id=link31 onMouseOver="ShowTip(event, 'tt11', 'link31')" onMouseOut="HideTip('tt11')">storeFile</a></p></div></div></div>
 
