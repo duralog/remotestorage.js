@@ -2191,6 +2191,13 @@ define('lib/wireClient',['./getputdelete', './util'], function (getputdelete, ut
       return info;
     },
 
+    getStorageInfo: function() {
+      return {
+        type: getSetting('storageType'),
+        href: getSetting('storageHref')
+      };
+    },
+
     // Method: getStorageHref
     //
     // Get base URL of the user's remotestorage.
@@ -4245,8 +4252,6 @@ define('lib/sync',[
       debugEvent(path, 'mergeDirectory');
       //END-DEBUG
       logger.debug("traverseTree.mergeDirectory", path, localNode, options);
-
-      console.log(path, "FULL LISTING ASSEMBLED FROM", localNode, remoteNode);
 
       var fullListing = makeSet(
         Object.keys(localNode.data),
@@ -7438,6 +7443,8 @@ define('remoteStorage',[
     setStorageInfo: wireClient.setStorageInfo,
 
     getStorageHref: wireClient.getStorageHref,
+
+    getStorageInfo: wireClient.getStorageInfo,
 
     disableSyncThrottling: sync.disableThrottling,
 
