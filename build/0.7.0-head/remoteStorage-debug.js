@@ -1862,7 +1862,7 @@ define('lib/getputdelete',
 
     function realDoCall(method, url, body, mimeType, token) {
       return util.makePromise(function(promise) {
-        logger.debug(method, url);
+        logger.info(method, url);
         var platformObj = {
           url: url,
           method: method,
@@ -2366,9 +2366,8 @@ define('lib/store/memory',['../util', './syncTransaction'], function(util, syncT
   // Namespace: store.memory
   // <StorageAdapter> implementation that keeps data in memory.
 
-  var logger = util.getLogger('store::memory');
-
-  return function() {
+  return function(logName) {
+    var logger = util.getLogger(logName || 'store::memory');
     var nodes = {};
 
     var store = {
@@ -3329,7 +3328,7 @@ define('lib/store/remoteCache',[
   var remoteClient = wireClient;
 
   return function() {
-    var cache = memoryAdapter();
+    var cache = memoryAdapter('store::remote_cache_backend');
 
     function determineTimestamp(path) {
       return util.makePromise(function(promise) {
@@ -5514,6 +5513,12 @@ define('lib/baseClient',[
     //   fileReader.readAsArrayBuffer(file);
     //   (end code)
     //
+    //
+    // Please keep in mind that the storage adapter used may limit the size of
+    // files that can be stored in cache. The current default is localStorage,
+    // which places a very tight limit due to constraints enforced by browsers
+    // and the necessity of base64 encoding binary data.
+    //
     storeFile: function(mimeType, path, data) {
       if(util.isDir(path)) {
         return failedPromise(new Error("Can't store directory node"));
@@ -7062,6 +7067,9 @@ define('remoteStorage',[
   var claimedModules = {}, modules = {}, moduleNameRE = /^[a-z\-]+$/;
 
   var logger = util.getLogger('base');
+
+  util.silenceAllLoggers();
+  util.unsilenceLogger('base', 'getputdelete');
 
   // Namespace: remoteStorage
   var remoteStorage =  {
