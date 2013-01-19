@@ -19,15 +19,20 @@ define(['requirejs', 'localStorage'], function(requirejs, localStorage) {
       requirejs([
         './src/lib/util',
         './src/remoteStorage',
+        './server/nodejs-example',
         './test/helper/server',
         './src/modules/root'
-      ], function(_util, remoteStorage, serverHelper, root) {
+      ], function(_util, remoteStorage, nodejsExampleServer, serverHelper, root) {
         util = _util;
         curry = util.curry;
         env.remoteStorage = remoteStorage;
         env.serverHelper = serverHelper;
 
         env.client = root;
+
+        util.extend(env.serverHelper, nodejsExampleServer.server);
+
+        env.serverHelper.disableLogs();
 
         env.serverHelper.start(function() {
           _this.result(true);
@@ -226,6 +231,64 @@ define(['requirejs', 'localStorage'], function(requirejs, localStorage) {
               env.serverHelper.expectRequest(_this, 'GET', 'me/');
               env.serverHelper.expectNoMoreRequest(_this);
               _this.assert(true, true);
+            });
+        }
+      },
+
+      {
+        desc: "store public data",
+        run: function(env, test) {
+          util.unsilenceLogger('sync');
+          util.setLogLevel('debug');
+          env.client.storeFile('text/plain', '/public/foo', 'bar').
+            then(function() {
+              env.serverHelper.expectRequest(test, 'GET', 'me/public/');
+              env.serverHelper.expectRequest(test, 'GET', 'me/public/foo');
+              env.serverHelper.expectRequest(test, 'PUT', 'me/public/foo', 'bar');
+              env.serverHelper.expectRequest(test, 'GET', 'me/public/');
+              env.serverHelper.expectNoMoreRequest(test);
+              test.assert(true, true);
+            });
+        }
+      },
+
+      {
+        desc: "change events with outgoing changes",
+        run: function(env, test) {
+          var receivedEvents = [];
+          env.client.on('change', function(event) {
+            receivedEvents.push(event);
+          });
+
+          function expectEvent(expected) {
+            var rel = receivedEvents.length;
+            var matching, matchIndex;
+            for(var i=0;i<rel;i++) {
+              var e = receivedEvents[i];
+              for(var key in expected) {
+                if(e[key] !== expected[key]) {
+                  continue;
+                }
+              }
+              matching = e;
+              matchIndex = i;
+              break;
+            }
+            test.assertTypeAnd(matching, 'object', "No event found matching: " + JSON.stringify(expected));
+            if(matching) {
+              receivedEvents.splice(matchIndex, 1);
+            }
+          }
+
+          env.client.storeObject('test', 'foo/bar/test-obj', { phu: 'quoc' }).
+            then(function() {
+              expectEvent({
+                origin: 'window',
+                path: 'foo/bar/test-obj',
+                oldValue: undefined,
+                newValue: { phu: 'quoc', '@type': 'https://remotestoragejs.com/spec/modules/root/test' }
+              });
+              test.assert(receivedEvents, [], "There are still events in the queue: " + JSON.stringify(receivedEvents));
             });
         }
       }

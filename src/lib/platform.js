@@ -203,7 +203,7 @@ define(['./util'], function(util) {
 
     return util.makePromise(function(promise) {
 
-      if(typeof(params.data) === 'object' && params.data instanceof Blob) {
+      if(typeof(params.data) === 'object' && params.data instanceof ArrayBuffer) {
         throw new Error("Sending binary data not yet implemented for nodejs");
       }
 
@@ -259,7 +259,7 @@ define(['./util'], function(util) {
         if(timer) {
           clearTimeout(timer);
         }
-        promise.fail(e.message);
+        promise.fail(e && e.message);
       });
       if(params.data) {
         request.end(params.data);
