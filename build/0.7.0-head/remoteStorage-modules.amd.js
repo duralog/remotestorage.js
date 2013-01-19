@@ -1,6 +1,4 @@
-/* remoteStorage.js 0.7.0-head remoteStoragejs.com, MIT-licensed */
-(function() {
-
+define([], function() {
 /**
  * almond 0.1.4 Copyright (c) 2011, The Dojo Foundation All Rights Reserved.
  * Available via the MIT or new BSD license.
@@ -9243,7 +9241,5 @@ define('remoteStorage-modules',[
   return remoteStorage;
 });
 
-
-  remoteStorage = require('remoteStorage-modules');
-
-})();
+  return require('remoteStorage');
+});
