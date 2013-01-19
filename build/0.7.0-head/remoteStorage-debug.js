@@ -1909,7 +1909,7 @@ define('lib/getputdelete',
           }, function(error) {
             if(error === 404) {
               return promise.fulfill(undefined);
-            } else if(error === 401) {
+            } else if(error === 401 || error === 403) {
               error = 'unauthorized';
             };
             promise.fail(error);
