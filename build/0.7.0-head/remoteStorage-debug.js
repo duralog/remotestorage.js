@@ -1,4 +1,4 @@
-/* remoteStorage.js 0.7.0-head remoteStoragejs.com, MIT-licensed */
+/* remoteStorage.js 0.7.0 remotestorage.io, MIT-licensed */
 (function() {
 
 /**
@@ -1666,6 +1666,8 @@ define('lib/webfinger',
 
     var logger = util.getLogger('webfinger');
 
+    var timeout = 10000;
+
       ///////////////
      // Webfinger //
     ///////////////
@@ -1737,14 +1739,14 @@ define('lib/webfinger',
     }
 
     // request a single profile
-    function fetchProfile(address, timeout) {
-      console.log('fetch profile', address, timeout);
+    function fetchProfile(address) {
+      logger.info('fetch profile', address);
       return platform.ajax({
         url: address,
         timeout: timeout
       }).then(function(body, headers) {
         var mimeType = headers && headers['content-type'] && headers['content-type'].split(';')[0];
-        console.log('fetched', body, mimeType);
+        logger.debug('fetched', body, mimeType);
         if(mimeType && mimeType.match(/^application\/json/)) {
           return parseJRD(body);
         } else {
@@ -1762,26 +1764,36 @@ define('lib/webfinger',
 
     // fetch profile from all given addresses and yield the first one that
     // succeeds.
-    function fetchHostMeta(addresses, timeout) {
-      console.log('fetch host meta', addresses, timeout);
-      return util.asyncMap(addresses, util.rcurry(fetchProfile, timeout, true)).
+    function fetchHostMeta(protocol, addresses) {
+      addresses = addresses.map(function(addr) {
+        return protocol + addr;
+      });
+      return util.asyncMap(addresses, fetchProfile).
         then(function(profiles, errors) {
-          console.log('host meta mapped', profiles);
+          logger.debug('host meta mapped', profiles);
           for(var i=0;i<profiles.length;i++) {
             if(profiles[i]) {
               return profiles[i];
             }
           }
+          // if any of the requests failed due to a timeout, that's our
+          // reason as well.
+          for(var j=0;j<errors.length;j++) {
+            if(errors[j] === 'timeout') {
+              throw "timeout";
+            }
+          }
+          // otherwise we just fail with a generic reason.
           throw 'requests-failed';
         });
     }
 
     function extractRemoteStorageLink(links) {
-      console.log('extract remoteStorage link', links);
+      logger.debug('extract remoteStorage link', links);
       var remoteStorageLink = links.remoteStorage || links.remotestorage;
       var lrddLink;
       if(remoteStorageLink) {
-        console.log('remoteStorageLink', remoteStorageLink);
+        logger.info('remoteStorageLink', remoteStorageLink);
         if(remoteStorageLink.href &&
            remoteStorageLink.type &&
            remoteStorageLink.properties &&
@@ -1792,7 +1804,7 @@ define('lib/webfinger',
                           "href, type, properties, properties.auth-endpoint. " +
                           JSON.stringify(remoteStorageLink));
         }
-      } else if(lrddLink = links.lrdd) {
+      } else if((lrddLink = links.lrdd) && links.lrdd.template) {
         return fetchProfile(
           lrddLink.template.replace('{uri}', 'acct:' + userAddress)
         ).then(extractRemoteStorageLink);
@@ -1806,17 +1818,15 @@ define('lib/webfinger',
     //
     // Parameters:
     //   userAddress - a string in the form user@host
-    //   options     - see below
-    //   callback    - to receive the discovered storage info
-    //
-    // Options:
-    //   timeout     - time in milliseconds, until resulting in a 'timeout' error.
     //
     // Callback parameters:
     //   err         - either an error message or null if discovery succeeded
     //   storageInfo - the format is equivalent to that of the JSON representation of the remotestorage link (see above)
     //
-    function getStorageInfo(userAddress, options) {
+    // Returns:
+    //   A promise for the user's webfinger profile
+    //
+    function getStorageInfo(userAddress) {
 
       /*
 
@@ -1838,20 +1848,36 @@ define('lib/webfinger',
       }
       var query = '?resource=acct:' + encodeURIComponent(userAddress);
       var addresses = [
-        'https://' + hostname + '/.well-known/webfinger' + query,
-        'http://'  + hostname + '/.well-known/webfinger' + query,
-        'https://' + hostname + '/.well-known/host-meta.json' + query,
-        'https://' + hostname + '/.well-known/host-meta' + query,
-        'http://'  + hostname + '/.well-known/host-meta.json' + query,
-        'http://'  + hostname + '/.well-known/host-meta' + query
+        '://' + hostname + '/.well-known/webfinger' + query,
+        '://' + hostname + '/.well-known/host-meta.json' + query,
+        '://' + hostname + '/.well-known/host-meta' + query,
       ];
 
-      return fetchHostMeta(addresses, (options && options.timeout) || 10000).
-        then(extractRemoteStorageLink);
+      return util.makePromise(function(promise) {
+        fetchHostMeta('https', addresses).
+          then(extractRemoteStorageLink, function() {
+            return fetchHostMeta('http', addresses).
+              then(extractRemoteStorageLink).
+              then(function(profile) {
+                promise.fulfill(profile);
+              }, promise.fail.bind(promise));
+          }).
+          then(function(profile) {
+            promise.fulfill(profile);
+          }, promise.fail.bind(promise));
+      });
     }
 
     return {
-      getStorageInfo: getStorageInfo
+      getStorageInfo: getStorageInfo,
+
+      setTimeout: function(t) {
+        timeout = t;
+      },
+
+      getTimeout: function() {
+        return timeout;
+      }
     };
 });
 
@@ -1865,13 +1891,15 @@ define('lib/getputdelete',
 
     var defaultContentType = 'application/octet-stream';
 
+    var timeout = 10000;
+
     function realDoCall(method, url, body, mimeType, token) {
       return util.makePromise(function(promise) {
         logger.info(method, url);
         var platformObj = {
           url: url,
           method: method,
-          timeout: 10000,
+          timeout: timeout,
           headers: {}
         };
 
@@ -2005,7 +2033,16 @@ define('lib/getputdelete',
       //   data     - raw response data
       //   mimeType - value of the response's Content-Type header. If none was returned, this defaults to application/octet-stream.
       //
-      set:    set
+      set:    set,
+
+      setTimeout: function(t) {
+        timeout = t;
+      },
+
+      getTimeout: function() {
+        return timeout;
+      }
+
     };
 });
 
@@ -3659,6 +3696,20 @@ define('lib/sync',[
     });
   }
 
+  // Function: updateDataNode
+  //
+  // Sync a single data node, bypassing cache. Used by <BaseClient> to
+  // fetch pending nodes.
+  //
+  // TODO: handle pushing nodes as well (if localNode is given)
+  function updateDataNode(path, localNode) {
+    return remoteAdapter.get(path).
+      then(function(node) {
+        remoteAdapter.expireKey(path);
+        return node;
+      });
+  }
+
 
   /**************************************/
 
@@ -4362,6 +4413,8 @@ define('lib/sync',[
     disable: disable,
 
     getQueue: function() { return taskQueue; },
+
+    updateDataNode: updateDataNode,
 
     lastSyncAt: null,
 
@@ -5235,9 +5288,22 @@ define('lib/baseClient',[
     //   (end code)
     //
     getObject: function(path) {
+      var fullPath = this.makePath(path);
       return this.ensureAccess('r').
-        then(util.curry(store.getNode, this.makePath(path))).
-        get('data');
+        then(util.curry(store.getNode, fullPath)).
+        then(function(node) {
+          if(node.pending) {
+            return sync.updateDataNode(fullPath);
+          } else {
+            return node;
+          }
+        }).
+        then(function(node) {
+          if(node.mimeType !== 'application/json') {
+            logger.error("WARNING: getObject got called, but retrieved a non-json node at '" + fullPath + "'!");
+          }
+          return node.data;
+        });
     },
 
     //
@@ -5361,8 +5427,16 @@ define('lib/baseClient',[
     //   });
     //   (end code)
     getFile: function(path) {
+      var fullPath = this.makePath(path);
       return this.ensureAccess('r').
-        then(util.curry(store.getNode, this.makePath(path))).
+        then(util.curry(store.getNode, fullPath)).
+        then(function(node) {
+          if(node.pending) {
+            return sync.updateDataNode(fullPath);
+          } else {
+            return node;
+          }
+        }).
         then(function(node) {
           return {
             mimeType: node.mimeType,
@@ -6525,7 +6599,7 @@ define('lib/widget/default',['../util', '../assets', '../i18n'], function(util, 
 
   // PUBLIC
 
-  function display(domId, options) {
+  function display(element, options) {
     if(! options) {
       options = {};
     }
@@ -6533,9 +6607,15 @@ define('lib/widget/default',['../util', '../assets', '../i18n'], function(util, 
 
     i18n.setLocale('en');
 
+    if(! element) {
+      element = document.body;
+    } else if(typeof(element) === 'string') {
+      element = gEl(element);
+    }
+
     prepareWidget();
-    gEl(domId).appendChild(elements.style);
-    gEl(domId).appendChild(elements.widget);
+    element.appendChild(elements.style);
+    element.appendChild(elements.widget);
     updateWidget();
   }
 
@@ -6628,6 +6708,9 @@ define('lib/widget',[
   var events = util.getEventEmitter('ready', 'disconnect', 'state');
   var logger = util.getLogger('widget');
 
+  var maxTimeout = 45000;
+  var timeoutAdjustmentFactor = 1.5;
+
   // the view.
   var view = defaultView;
   // options passed to displayWidget
@@ -6646,7 +6729,10 @@ define('lib/widget',[
       if(! offlineTimer) {
         offlineTimer = setTimeout(function() {
           offlineTimer = null;
-          sync.fullSync();
+          sync.fullSync().
+            then(function() {
+              schedule.enable();
+            });
         }, reconnectInterval);
       }
     },
@@ -6700,6 +6786,9 @@ define('lib/widget',[
     setState('authing');
     return webfinger.getStorageInfo(userAddress).
       then(wireClient.setStorageInfo, function(error) {
+        if(error === 'timeout') {
+          adjustTimeout();
+        }
         setState((typeof(error) === 'string') ? 'typing' : 'error', error);
       }).
       get('properties').get('auth-endpoint').
@@ -6776,7 +6865,17 @@ define('lib/widget',[
     }
   }
 
+  function adjustTimeout() {
+    var t = getputdelete.getTimeout();
+    if(t < maxTimeout) {
+      t *= timeoutAdjustmentFactor;
+      webfinger.setTimeout(t);
+      getputdelete.setTimeout(t);
+    }
+  }
+
   function handleSyncTimeout() {
+    adjustTimeout();
     schedule.disable();
     setState('offline');
   }
@@ -6789,7 +6888,7 @@ define('lib/widget',[
     }, handleSyncError);
   }
 
-  function display(_remoteStorage, domId, options) {
+  function display(_remoteStorage, element, options) {
     remoteStorage = _remoteStorage;
     widgetOptions = options;
     if(! options) {
@@ -6806,7 +6905,7 @@ define('lib/widget',[
 
     schedule.watch('/', 30000);
 
-    view.display(domId, options);
+    view.display(element, options);
 
     view.on('sync', sync.forceSync);
     view.on('connect', connectStorage);
