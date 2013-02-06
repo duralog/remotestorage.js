@@ -5,7 +5,6 @@
     <title>minimal remoteStorage.js example</title>
   </head>
   <body>
-    <div id="remotestorage-connect"></div>
     <div id="app">
       <div id="current">(loading...)</div>
       <input id="text" />
@@ -15,7 +14,7 @@
       Please connect your remotestorage (get one at <a href="https://heahdk.net/">https://heahdk.net/</a>)
     </p>
   </body>
-  <script src="http://remotestoragejs.com/release/0.7.0/remoteStorage.min.js"></script>
+  <script src="remoteStorage-5f79be36.min.js"></script>
   <script src="notes.js"></script>
   <script>
     function $(id) { return document.getElementById(id); }
@@ -37,7 +36,7 @@
 
     hideApp();
     remoteStorage.claimAccess({ notes: 'rw' }).then(function() {
-      remoteStorage.displayWidget('remotestorage-connect');
+      remoteStorage.displayWidget();
       remoteStorage.onWidget('ready', showApp);
       remoteStorage.onWidget('disconnect', hideApp);
       remoteStorage.notes.onChange(displayNote);
