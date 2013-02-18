@@ -125,8 +125,13 @@ define([
       moduleEvents[moduleName] = {};
     }
     this.events = util.getEventEmitter('change', 'conflict', 'error');
-    moduleEvents[moduleName][isPublic] = this.events;
+    moduleEvents[moduleName][!!isPublic] = this.events;
     util.bindAll(this);
+
+    this.types = {};
+    this.typeAliases = {};
+    this.schemas = {};
+    this.typeIdKeys = {};
   };
 
   // Class: BaseClient
@@ -172,7 +177,7 @@ define([
     //
     //   window - this event was generated from the same *browser tab* or window that received the event
     //   device - this event was generated from the same *app*, but a differnent tab or window
-    //   remote - this event came from the *remotestorage server*. that means another app or the same app on another device caused the event.
+    //   remote - this event came from the *remoteStorage server*. that means another app or the same app on another device caused the event.
     //
     // Example:
     //   (start code)
@@ -329,13 +334,17 @@ define([
       return this.ensureAccess('r').
         then(util.curry(store.getNode, fullPath)).
         then(function(node) {
-          if((!node) || Object.keys(node.data).length === 0) {
+          if((!node) || node.pending || Object.keys(node.data).length === 0) {
             return store.isForced(fullPath).
               then(function(isForced) {
                 if(isForced) {
                   return node;
                 } else {
-                  return sync.updateDataNode(fullPath);
+                  return sync.updateDataNode(fullPath).
+                    then(function(node) {
+                      return store.setNodePending(fullPath, new Date().getTime()).
+                        then(function() { return node; });
+                    });
                 }
               });
           } else {
@@ -437,6 +446,15 @@ define([
         then(function(node) {
           if(node.pending) {
             return sync.updateDataNode(fullPath);
+          } else if(! node.data) {
+            return store.getNode(util.containingDir(fullPath)).
+              then(function(parentNode) {
+                if(parentNode.pending) {
+                  return sync.updateDataNode(fullPath);
+                } else {
+                  return node;
+                }
+              });
           } else {
             return node;
           }
@@ -521,10 +539,10 @@ define([
     //   that, eventually you need to know how the data at hand is structured.
     //   For documents on the web, this is usually done via a MIME type. The
     //   MIME type of JSON objects however, is always application/json.
-    //   To add that extra layer of "knowing what this object is", remotestorage
+    //   To add that extra layer of "knowing what this object is", remoteStorage
     //   aims to use <JSON-LD at http://json-ld.org/>.
     //   A first step in that direction, is to add a *@type attribute* to all
-    //   JSON data put into remotestorage.
+    //   JSON data put into remoteStorage.
     //   Now that is what the *type* is for.
     //
     //   Within remoteStorage.js, @type values are built using three components:
@@ -661,7 +679,7 @@ define([
     // Method: getItemURL
     //
     // Get the full URL of the item at given path. This will only
-    // work, if the user is connected to a remotestorage account.
+    // work, if the user is connected to a remoteStorage account.
     //
     // Parameter:
     //   path - path relative to the module root
@@ -730,7 +748,7 @@ define([
     //
     // Yields true if the node at the given path has a diff set.
     // Having a "diff" means, that the node or one of it's descendants
-    // has been updated since it was last pulled from remotestorage.
+    // has been updated since it was last pulled from remoteStorage.
     hasDiff: function(path) {
       var absPath = this.makePath(path);
       var item = null;
@@ -749,11 +767,6 @@ define([
     },
 
     /**** TYPE HANDLING ****/
-
-    types: {},
-    typeAliases: {},
-    schemas: {},
-    typeIdKeys: {},
 
     resolveType: function(alias) {
       var type = this.types[alias];

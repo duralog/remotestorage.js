@@ -13,7 +13,7 @@ define([
 
   // Namespace: widget
   //
-  // The remotestorage widget.
+  // The remoteStorage widget.
   //
   // See <remoteStorage.displayWidget>
   //
@@ -98,7 +98,7 @@ define([
   function buildScopeRequest() {
     var scopes = remoteStorage.claimedModules;
     return Object.keys(remoteStorage.claimedModules).map(function(module) {
-      return (module === 'root' ? '' : module) + ':' + scopes[module];
+      return (module === 'root' && remoteStorage.getStorageType() === '2012.04' ? '' : module) + ':' + scopes[module];
     }).join(' ');
   }
 
@@ -170,20 +170,9 @@ define([
     if(params.access_token) {
       wireClient.setBearerToken(params.access_token);
     }
-    // Query parameter: storage_root, storage_api
-    if(params.storage_root && params.storage_api) {
-      wireClient.setStorageInfo({
-        type: params.storage_api,
-        href: params.storage_root
-      });
-    }
-    // Query parameter: authorize_endpoint
-    if(params.authorize_endpoint) {
-      requestToken(params.authorize_endpoint);
-    }
-    // Query parameter: user_address
-    if(params.user_address) {
-      view.setUserAddress(params.user_address);
+    // Query parameter: remotestorage
+    if(params.remotestorage) {
+      view.setUserAddress(params.remotestorage);
     } else {
       var userAddress = settings.get('userAddress');
       if(userAddress) {
