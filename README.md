@@ -47,7 +47,7 @@
         redrawApp();
       });
 
-#### see [example/minimal/index.html](https://github.com/RemoteStorage/remoteStorage.js/blob/master/example/minimal/index.html) for the full example code.
+#### see [example/minimal/index.html](https://github.com/remotestorage/remotestorage.js/blob/master/example/minimal/index.html) for the full example code.
 
 ### Running the local Test Server
 
