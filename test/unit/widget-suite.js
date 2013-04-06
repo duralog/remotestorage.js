@@ -69,8 +69,9 @@ define(['requirejs'], function(requirejs) {
         './src/lib/wireClient', 
         './src/lib/baseClient', 
         './src/lib/getputdelete', 
-        './src/lib/webfinger'
-      ], function(_util, widget, sync, wireClient, baseClient, getputdelete, webfinger) {
+        './src/lib/webfinger',
+        './src/lib/access'
+      ], function(_util, widget, sync, wireClient, baseClient, getputdelete, webfinger, Access) {
         util = _util;
         env.widget = widget;
         env.view = stubWidgetView();
@@ -80,6 +81,7 @@ define(['requirejs'], function(requirejs) {
         env.baseClient = baseClient;
         env.getputdelete = getputdelete;
         env.webfinger = webfinger;
+        env.Access = Access;
 
         env.origGetStorageInfo = env.webfinger.getStorageInfo;
         env.webfinger.getStorageInfo = function() {
@@ -92,8 +94,10 @@ define(['requirejs'], function(requirejs) {
         }
 
         env.fakeRemoteStorage = {
-          claimedModules: { foo: 'rw' }
+          access: new env.Access()
         };
+
+        env.fakeRemoteStorage.access.claim('foo', 'rw');
 
         env.view._results['getLocation'] = 'http://test.host/';
         _this.result(true);
@@ -215,12 +219,162 @@ define(['requirejs'], function(requirejs) {
             var storageInfoReq = env.fakefinger.shift();
             test.assertTypeAnd(storageInfoReq, 'object', "expected webfinger.getStoageInfo to have been called!");
             test.assertAnd(storageInfoReq.args[0], 'foo@bar.baz');
-            storageInfoReq.promise.fail('timeout');
+            storageInfoReq.promise.reject('timeout');
             util.nextTick(function() {
               test.assertAnd(env.getputdelete.getTimeout(), 1500);
               test.assert(env.webfinger.getTimeout(), 1500);
             });
           });
+        }
+      },
+
+      {
+        desc: "#display() redirects correctly after the webfinger discovery",
+        run: function(env, test) {
+          env.widget.display(env.fakeRemoteStorage, 'remotestorage-connect', {});
+          env.view.emit('connect', 'foo@bar.baz');
+          util.nextTick(function() {
+            env.fakefinger.shift().promise.fulfill({
+              rel: 'remotestorage',
+              type: 'remotestorage-00',
+              href: 'http://local.dev/storage/me',
+              properties: {
+                'auth-method': '',
+                'auth-endpoint': 'http://local.dev/auth/me'
+              }
+            });
+            setTimeout(function() {
+              var redirectCall = env.view._calls.pop();
+              test.assertAnd(redirectCall.method, 'redirectTo');
+              test.assertAnd(redirectCall.args.length, 1);
+              var url = redirectCall.args[0];
+              test.assertAnd(url.split('?')[0], 'http://local.dev/auth/me');
+              var params = {};
+              url.split('?')[1].split('&').forEach(function(part) {
+                var kv = part.split('=').map(decodeURIComponent);
+                params[kv[0]] = kv[1];
+              });
+              // the result from getLocation
+              test.assertAnd(params.redirect_uri, 'http://test.host/');
+              // determined through env.fakeRemoteStorage
+              test.assertAnd(params.scope, 'foo:rw');
+              test.assertAnd(params.response_type, 'token');
+              test.done();
+            }, 150);
+          });
+        }
+      },
+
+      {
+        desc: "#display() allows overriding the redirect_uri through options",
+        run: function(env, test) {
+          env.widget.display(env.fakeRemoteStorage, 'remotestorage-connect', {
+            redirectUri: 'http://other/place'
+          });
+          env.view.emit('connect', 'foo@bar.baz');
+          util.nextTick(function() {
+            env.fakefinger.shift().promise.fulfill({
+              rel: 'remotestorage',
+              type: 'remotestorage-00',
+              href: 'http://local.dev/storage/me',
+              properties: {
+                'auth-method': '',
+                'auth-endpoint': 'http://local.dev/auth/me'
+              }
+            });
+            setTimeout(function() {
+              var redirectCall = env.view._calls.pop();
+              test.assertAnd(redirectCall.method, 'redirectTo');
+              test.assertAnd(redirectCall.args.length, 1);
+              var url = redirectCall.args[0];
+              test.assertAnd(url.split('?')[0], 'http://local.dev/auth/me');
+              var params = {};
+              url.split('?')[1].split('&').forEach(function(part) {
+                var kv = part.split('=').map(decodeURIComponent);
+                params[kv[0]] = kv[1];
+              });
+              test.assert(params.redirect_uri, 'http://other/place');
+            }, 150);
+          });
+        }
+      },
+
+      {
+        desc: "a redirect_uri containing a fragment strips the fragment before setting the parameter",
+        run: function(env, test) {
+          env.widget.display(env.fakeRemoteStorage, 'remotestorage-connect', {
+            redirectUri: 'http://other/place#foo'
+          });
+          env.view.emit('connect', 'foo@bar.baz');
+          util.nextTick(function() {
+            env.fakefinger.shift().promise.fulfill({
+              rel: 'remotestorage',
+              type: 'remotestorage-00',
+              href: 'http://local.dev/storage/me',
+              properties: {
+                'auth-method': '',
+                'auth-endpoint': 'http://local.dev/auth/me'
+              }
+            });
+            setTimeout(function() {
+              var redirectCall = env.view._calls.pop();
+              test.assertAnd(redirectCall.method, 'redirectTo');
+              test.assertAnd(redirectCall.args.length, 1);
+              var url = redirectCall.args[0];
+              test.assertAnd(url.split('?')[0], 'http://local.dev/auth/me');
+              var params = {};
+              url.split('?')[1].split('&').forEach(function(part) {
+                var kv = part.split('=').map(decodeURIComponent);
+                params[kv[0]] = kv[1];
+              });
+              test.assert(params.redirect_uri, 'http://other/place');
+            }, 150);
+          });
+        }
+      },
+
+      {
+        desc: "a redirect_uri containing a fragment sets the 'state' parameter to the fragment",
+        run: function(env, test) {
+          env.widget.display(env.fakeRemoteStorage, 'remotestorage-connect', {
+            redirectUri: 'http://other/place#foo'
+          });
+          env.view.emit('connect', 'foo@bar.baz');
+          util.nextTick(function() {
+            env.fakefinger.shift().promise.fulfill({
+              rel: 'remotestorage',
+              type: 'remotestorage-00',
+              href: 'http://local.dev/storage/me',
+              properties: {
+                'auth-method': '',
+                'auth-endpoint': 'http://local.dev/auth/me'
+              }
+            });
+            setTimeout(function() {
+              var redirectCall = env.view._calls.pop();
+              test.assertAnd(redirectCall.method, 'redirectTo');
+              test.assertAnd(redirectCall.args.length, 1);
+              var url = redirectCall.args[0];
+              test.assertAnd(url.split('?')[0], 'http://local.dev/auth/me');
+              var params = {};
+              url.split('?')[1].split('&').forEach(function(part) {
+                var kv = part.split('=').map(decodeURIComponent);
+                params[kv[0]] = kv[1];
+              });
+              test.assert(params.state, 'foo');
+            }, 150);
+          });
+        }
+      },
+
+
+      {
+        desc: "#display() recovers the fragment from the 'state' parameter",
+        run: function(env, test) {
+          env.view._results['getLocation'] = 'http://test.host/#abc=def&remotestorage=foo@bar.baz&state=foobar';
+          env.widget.display(env.fakeRemoteStorage, 'remotestorage-connect', {});
+          expectCall(test, env.view, 'setLocation', ['http://test.host/#foobar']);
+          test.done();
         }
       }
 

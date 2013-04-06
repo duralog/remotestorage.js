@@ -70,9 +70,6 @@ define([
   // Represents a node within the local store.
   //
   // Properties:
-  //   startAccess    - either "r" or "rw". Flag means, that this node has been claimed access on (see <remoteStorage.claimAccess>) (default: null)
-  //   startForce     - boolean flag to indicate that this node shall always be synced. (see <BaseClient.use> and <BaseClient.release>) (default: null)
-  //   startForceTree - boolean flag that all directory children of this node shall be synced.
   //   timestamp      - last time this node was (apparently) updated (default: 0)
   //   lastUpdatedAt  - Last time this node was upated from remote storage
   //   mimeType       - MIME media type
@@ -86,14 +83,13 @@ define([
 
   function fireChange(origin, path, oldValue) {
     return getNode(path).
-      get('data', 'timestamp').
-      then(function(newValue, timestamp) {
+      then(function(node) {
         events.emit('change', {
           path: path,
           origin: origin,
           oldValue: oldValue,
-          newValue: newValue,
-          timestamp: timestamp
+          newValue: node.data,
+          timestamp: node.timestamp
         });
       });
   }
@@ -103,13 +99,12 @@ define([
 
   function fireForeignChange(path, oldValue) {
     return getNode(path).
-      get('data', 'timestamp').
-      then(function(newValue, timestamp) {
+      then(function(node) {
         events.emit('foreign-change', {
           path: path,
           oldValue: oldValue,
-          newValue: newValue,
-          timestamp: timestamp
+          newValue: node.data,
+          timestamp: node.timestamp
         });
       });
   }
@@ -143,9 +138,6 @@ define([
     return dataStore.get(path).then(function(node) {
       if(! node) {
         node = {//this is what an empty node looks like
-          startAccess: null,
-          startForce: null,
-          startForceTree: null,
           timestamp: 0,
           lastUpdatedAt: 0,
           mimeType: "application/json"
@@ -183,7 +175,6 @@ define([
   //   change w/ origin=remote - unless this is an outgoing change
   //
   function setNodeData(path, data, outgoing, timestamp, mimeType) {
-    logger.debug('PUT', path, { data: data, mimeType: mimeType });
     return dataStore.transaction(true, function(transaction) {
       return getNode(path, transaction).then(function(node) {
 
@@ -205,43 +196,11 @@ define([
         }
         node.mimeType = mimeType;
 
-        // FIXME: only set this when incoming data is set?
-        delete node.pending;
-
         return updateNode(path, (typeof(node.data) !== 'undefined' ? node : undefined), outgoing, false, timestamp, oldValue, transaction).
           then(function() {
             transaction.commit();
           });
       });      
-    });
-  }
-
-  function setNodePending(path, timestamp) {
-    return dataStore.transaction(true, function(transaction) {
-      return isForced(util.containingDir(path), transaction).
-        then(function(isForced) {
-          var paths = [path];
-          if(! isForced) {
-            var parts = util.pathParts(path);
-            var pl = parts.length;
-            for(var i=parts.length - 1;i>0;i--) {
-              paths.unshift(parts.slice(0, i).join(''));
-            }
-          }
-          return util.asyncEach(paths, function(p) {
-            return getNode(p, transaction).then(function(node) {
-              // clear only data nodes (we want to preserve pending listings)
-              if(! util.isDir(p)) {
-                delete node.data;
-              }
-              node.pending = true;
-              return updateNode(p, node, false, false, timestamp, undefined, transaction);
-            });
-          });
-        }).
-        then(function() {
-          transaction.commit();
-        });
     });
   }
 
@@ -276,47 +235,9 @@ define([
     }
   }
 
-  // Method: setNodeAccess
-  //
-  // Set startAccess flag on a node.
-  //
-  // Parameters:
-  //   path  - absolute path to the node
-  //   claim - claim to set. Either "r" or "rw"
-  //
-  function setNodeAccess(path, claim) {
-    logger.debug('setNodeAccess', path, claim);
-    return getNode(path).then(function(node) {
-      if((claim !== node.startAccess) &&
-         (claim === 'rw' || node.startAccess === null)) {
-        return updateMetadata(path, {
-          startAccess: claim
-        }, node);
-      }
-    });
-  }
-
   function setNodeError(path, error) {
-    logger.debug('setNodeError', path, error);
     return updateMetadata(path, {
       error: error
-    });
-  }
-
-  // Method: setNodeForce
-  //
-  // Set startForce and startForceTree flags on a node.
-  //
-  // Parameters:
-  //   path      - absolute path to the node
-  //   dataFlag  - whether to sync data
-  //   treeFlag  - whether to sync the tree
-  //
-  function setNodeForce(path, dataFlag, treeFlag) {
-    logger.debug('setNodeForce', path, dataFlag, treeFlag);
-    return updateMetadata(path, {
-      startForce: dataFlag,
-      startForceTree: treeFlag
     });
   }
 
@@ -334,7 +255,6 @@ define([
   //   timestamp - new timestamp (received from remote) to set on the node.
   //
   function clearDiff(path, timestamp) {
-    logger.debug('clearDiff', path);
     return getNode(path).then(function(node) {
 
       function clearDiffOnParent() {
@@ -355,8 +275,7 @@ define([
         }
       }
 
-      if(util.isDir(path) && Object.keys(node.data).length === 0 &&
-         !(node.startAccess || node.startForce || node.startForceTree)) {
+      if(util.isDir(path) && Object.keys(node.data).length === 0) {
         // remove empty dir
         return updateNode(path, undefined, false, false).then(clearDiffOnParent);
       } else if(timestamp) {
@@ -393,7 +312,7 @@ define([
           }
         });
       } else {
-        return fireChange('device', path);
+        return fireChange('remote', path);
       }
     }
 
@@ -425,12 +344,12 @@ define([
 
   function determineDirTimestamp(path, transaction) {
     return getNode(path, transaction).
-      get('data').then(function(data) {
+      then(function(node) {
         var t = 0;
-        if(data) {
-          for(var key in data) {
-            if(data[key] > t) {
-              t = data[key];
+        if(node.data) {
+          for(var key in node.data) {
+            if(node.data[key] > t) {
+              t = node.data[key];
             }
           }
         }
@@ -440,15 +359,11 @@ define([
 
   function touchNode(path) {
     return dataStore.transaction(true, function(transaction) {
-      logger.info("touchNode", path);
-      return getNode(path, transaction).
-        then(function(node) {
-          if(typeof(node.data) === 'undefined') {
-            node.pending = true;
-          }
-          return updateNode(path, node, false, true, undefined, undefined, transaction).
-            then(transaction.commit);
-        });
+      return getNode(path, transaction).then(function(node) {
+        return updateNode(
+          path, node, false, true, undefined, undefined, transaction
+        ).then(transaction.commit);
+      });
     });
   }
 
@@ -460,8 +375,7 @@ define([
     validPath(path);
 
     function adjustTimestamp(transaction) {
-      logger.debug('updateNode.adjustTimestamp', path);
-      return util.makePromise(function(promise) {
+      return util.getPromise(function(promise) {
         function setTimestamp(t) {
           if(t) { timestamp = t; }
           if(node && typeof(timestamp) == 'number') {
@@ -485,7 +399,6 @@ define([
     }
 
     function storeNode(transaction) {
-      logger.debug('updateNode.storeNode', path, node);
       if(node) {
         return transaction.set(path, node);
       } else {
@@ -501,31 +414,25 @@ define([
           then(function(parent) {
             if(meta) { // META
               if(! parent.data[baseName]) {
-                logger.debug('-> meta, create');
                 parent.data[baseName] = 0;
                 return updateNode(parentPath, parent, false, true, timestamp, undefined, transaction);
               }
             } else if(outgoing) { // OUTGOING
               if(node) {
-                logger.debug('-> outgoing, set');
                 parent.data[baseName] = timestamp;
               } else {
-                logger.debug('-> outgoing, remove');
                 delete parent.data[baseName];
               }
               parent.diff[baseName] = timestamp;
-              logger.debug('-> diff, update');
               return updateNode(parentPath, parent, true, false, timestamp, undefined, transaction);
             } else { // INCOMING
               if(node) { // add or change
                 if((! parent.data[baseName]) || parent.data[baseName] < timestamp) {
-                  logger.debug('-> incoming, set');
                   parent.data[baseName] = timestamp;
                   delete parent.diff[baseName];
                   return updateNode(parentPath, parent, false, false, timestamp, undefined, transaction);
                 }
               } else { // deletion
-                logger.debug('-> incoming, remove');
                 delete parent.data[baseName];
                 delete parent.diff[baseName];
                 return updateNode(parentPath, parent, false, false, timestamp, undefined, transaction);
@@ -536,7 +443,7 @@ define([
     }
 
     function fireEvents() {
-      if((!meta) && (! outgoing) && (! util.isDir(path)) && (! node.pending)) {
+      if((!meta) && (! outgoing) && (! util.isDir(path))) {
         // fire changes
         if(isForeign(path)) {
           return fireForeignChange(path, oldValue);
@@ -565,34 +472,6 @@ define([
     }
   }
 
-  function isForced(path, transaction) {
-    var parts = util.pathParts(path);
-
-    return util.makePromise(function(promise) {
-
-      function checkOne(node) {
-        if(node.startForce || node.startForceTree) {
-          promise.fulfill(true);
-        } else {
-          parts.pop();
-          checkNext();
-        }
-      }
-
-      function checkNext() {
-        if(parts.length === 0) {
-          promise.fulfill(false);
-        } else {
-          getNode(parts.join(''), transaction).
-            then(checkOne, promise.fail.bind(promise));
-        }
-      }
-
-      checkNext();
-
-    });
-  }
-
   return {
 
     memory: memoryAdapter,
@@ -605,19 +484,14 @@ define([
 
     getNode           : getNode,          // sync
     setNodeData       : setNodeData,      // sync
-    setNodePending    : setNodePending,   // sync
     clearDiff         : clearDiff,        // sync
     removeNode        : removeNode,       // sync
     setLastSynced     : setLastSynced,    // sync
-
-    isForced          : isForced,         // baseClient
+    touchNode         : touchNode,        // sync
 
     on                : events.on,
     emit              : events.emit,
-    setNodeAccess     : setNodeAccess,
-    setNodeForce      : setNodeForce,
     setNodeError      : setNodeError,
-    touchNode         : touchNode,
 
     forgetAll         : forgetAll,        // widget
     fireInitialEvents : fireInitialEvents,// widget

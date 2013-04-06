@@ -94,7 +94,7 @@ define(['requirejs'], function(requirejs) {
             ];
             env.assertNoRequest(test);
 
-            reqs.forEach(function(req) { req.promise.fail(); });
+            reqs.forEach(function(req) { req.promise.reject(); });
 
             setTimeout(function() {
               test.assertTypeAnd(env.findRequest('http://local.dev/.well-known/webfinger?resource=acct:me%40local.dev'), 'object', 'http webfinger');
@@ -121,16 +121,18 @@ define(['requirejs'], function(requirejs) {
               env.findRequest('https://local.dev/.well-known/host-meta?resource=acct:me%40local.dev'),
               env.findRequest('https://local.dev/.well-known/host-meta.json?resource=acct:me%40local.dev')
             ];
-            reqs[0].promise.fail();
-            reqs[1].promise.fail();
+            reqs[0].promise.reject();
+            reqs[1].promise.reject();
             reqs[2].promise.fulfill('{"links":[{"rel":"remoteStorage","href":"https://local.dev/storage/me","type":"https://www.w3.org/community/rww/wiki/read-write-web-00#simple","properties":{"auth-method":"https://tools.ietf.org/html/draft-ietf-oauth-v2-26#section-4.2","auth-endpoint":"https://local.dev/auth/me"}}]}');
             
             setTimeout(function() {
               test.assertTypeAnd(webfingerResult, 'object', 'getStorageInfo promise not fulfilled');
+              console.log('got object: ', webfingerResult);
               test.assert({
                 rel: 'remoteStorage',
                 href: 'https://local.dev/storage/me',
-                type: "https://www.w3.org/community/rww/wiki/read-write-web-00#simple",
+                // translated into an alias, so it can be compared more easily.
+                type: "2012.04",
                 properties: {
                   "auth-method": "https://tools.ietf.org/html/draft-ietf-oauth-v2-26#section-4.2",
                   "auth-endpoint": "https://local.dev/auth/me"
@@ -157,7 +159,7 @@ define(['requirejs'], function(requirejs) {
               env.findRequest('https://local.dev/.well-known/host-meta.json?resource=acct:me%40local.dev')
             ];
 
-            httpsReqs.forEach(function(req) { req.promise.fail(); });
+            httpsReqs.forEach(function(req) { req.promise.reject(); });
 
             setTimeout(function() {
               var reqs = [
@@ -166,8 +168,8 @@ define(['requirejs'], function(requirejs) {
                 env.findRequest('http://local.dev/.well-known/host-meta.json?resource=acct:me%40local.dev')
               ];
 
-              reqs[0].promise.fail();
-              reqs[1].promise.fail();
+              reqs[0].promise.reject();
+              reqs[1].promise.reject();
               reqs[2].promise.fulfill('{"links":[{"rel":"remoteStorage","href":"https://local.dev/storage/me","type":"https://www.w3.org/community/rww/wiki/read-write-web-00#simple","properties":{"auth-method":"https://tools.ietf.org/html/draft-ietf-oauth-v2-26#section-4.2","auth-endpoint":"https://local.dev/auth/me"}}]}');
               
               setTimeout(function() {
@@ -175,7 +177,8 @@ define(['requirejs'], function(requirejs) {
                 test.assert({
                   rel: 'remoteStorage',
                   href: 'https://local.dev/storage/me',
-                  type: "https://www.w3.org/community/rww/wiki/read-write-web-00#simple",
+                  // translated into an alias, so it can be compared more easily.
+                  type: "2012.04",
                   properties: {
                     "auth-method": "https://tools.ietf.org/html/draft-ietf-oauth-v2-26#section-4.2",
                     "auth-endpoint": "https://local.dev/auth/me"
