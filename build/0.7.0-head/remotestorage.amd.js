@@ -393,169 +393,6 @@ define('lib/util',[], function() {
   };
   Warning.prototype = Error.prototype;
 
-  var Promise = function(chained) {
-    this.result = undefined;
-    this.success = undefined;
-    this.handlers = {};
-    this.__defineSetter__('onsuccess', function(fulfilledHandler) {
-      if(typeof(fulfilledHandler) !== 'function') {
-        throw "Success callback must be a function!";
-      }
-      this.handlers.fulfilled = fulfilledHandler;
-      if(! this.nextPromise) {
-        this.nextPromise = new Promise(true);
-      }
-    });
-    this.__defineSetter__('onerror', function(failedHandler) {
-      if(typeof(failedHandler) !== 'function') {
-        throw "Error callback must be a function!";
-      }
-      this.handlers.failed = failedHandler;
-      if(! this.nextPromise) {
-        this.nextPromise = new Promise(true);
-      }
-    });
-
-    // //BEGIN-DEBUG
-    // if(! chained) {
-    //   var _this = this;
-    //   var stack;
-    //   try { throw new Error(); } catch(exc) { stack = exc.stack; };
-    //   this.debugTimer = setTimeout(function() {
-    //     if(_this.result) {
-    //       // already resolved for some reason, without clearing the timer.
-    //       return;
-    //     }
-    //     if(_this.handlers.fulfilled) { // only care if someone's listening
-    //       console.error("WARNING: promise timed out, failing!", stack);
-    //       _this.fail();
-    //     }
-    //   }, 10000);
-    // }
-    // //END-DEBUG
-  };
-
-  Promise.prototype = {
-    fulfill: function() {
-      if(typeof(this.success) !== 'undefined') {
-        console.error("Fulfillment value: ", arguments);
-        throw new Warning("Can't fulfill promise, already resolved as: " +
-                          (this.success ? 'fulfilled' : 'failed'));
-      }
-      //BEGIN-DEBUG
-      clearTimeout(this.debugTimer);
-      //END-DEBUG
-      this.result = util.toArray(arguments);
-      this.success = true;
-      if(! this.handlers.fulfilled) {
-        return;
-      }
-      var nextResult;
-      try {
-        nextResult = this.handlers.fulfilled.apply(this, this.result);
-      } catch(exc) {
-        if(this.nextPromise) {
-          this.nextPromise.fail(exc);
-        } else {
-          console.error("Uncaught exception: ", exc, exc.getStack());
-        }
-        return;
-      }
-      var nextPromise = this.nextPromise;
-      if(nextPromise) {
-        if(nextResult && typeof(nextResult.then) === 'function') {
-          // chain our promise after this one.
-          nextResult.then(function() {
-            nextPromise.fulfill.apply(nextPromise, arguments);
-          }, function() {
-            nextPromise.fail.apply(nextPromise, arguments);
-          });
-        } else {
-          nextPromise.fulfill(nextResult);
-        }
-      }
-    },
-
-    fail: function() {
-      if(typeof(this.success) !== 'undefined') {
-        console.error("Failure value: ", arguments);
-        throw new Error("Can't fail promise, already resolved as: " +
-                        (this.success ? 'fulfilled' : 'failed'));
-      }
-      //BEGIN-DEBUG
-      clearTimeout(this.debugTimer);
-      //END-DEBUG
-      this.result = util.toArray(arguments);
-      this.success = false;
-      if(this.handlers.failed) {
-        try {
-          this.handlers.failed.apply(this, this.result);
-        } catch(exc) {
-          if(this.nextPromise) {
-            this.nextPromise.fail(exc);
-          } else {
-            console.error("Uncaught error: ", this.result, (this.result[0] && this.result[0].stack));
-          }
-        }
-      } else if(this.nextPromise) {
-        this.nextPromise.fail.apply(this.nextPromise, this.result);
-      } else {
-        console.error("Uncaught error: ", this.result, (this.result[0] && this.result[0].stack));
-      }
-    },
-
-    fulfillLater: function() {
-      var args = util.toArray(arguments);
-      util.nextTick(function() {
-        this.fulfill.apply(this, args);
-      }.bind(this));
-      return this;
-    },
-
-    failLater: function() {
-      var args = util.toArray(arguments);
-      util.nextTick(function() {
-        this.fail.apply(this, args);
-      }.bind(this));
-      return this;
-    },
-
-    then: function(fulfilledHandler, errorHandler) {
-      this.handlers.fulfilled = fulfilledHandler;
-      this.handlers.failed = errorHandler;
-      this.nextPromise = new Promise(true);
-      return this.nextPromise;
-    },
-
-    get: function() {
-      var propertyNames = util.toArray(arguments);
-      return this.then(function(result) {
-        var promise = new Promise();
-        var values = [];
-        if(typeof(result) !== 'object') {
-          promise.failLater(new Error(
-            "Can't get properties of non-object (properties: " + 
-              propertyNames.join(', ') + ')'
-          ));
-        } else {
-          propertyNames.forEach(function(propertyName) {
-            values.push(result[propertyName]);
-          });
-          promise.fulfillLater.apply(promise, values);
-        }
-        return promise;
-      });
-    },
-
-    call: function(methodName) {
-      var args = Array.prototype.slice.call(arguments, 1);
-      return this.then(function(result) {
-        return result[methodName].apply(result, args);
-      });
-    }
-  };
-
-
   var util = {
 
     bufferToRaw: function(buffer) {
@@ -618,6 +455,10 @@ define('lib/util',[], function() {
       }
       parts.unshift('/');
       return parts;
+    },
+
+    pathContains: function(a, b) {
+      return a.slice(0, b.length) === b;
     },
 
     extend: function() {
@@ -797,40 +638,25 @@ define('lib/util',[], function() {
       return this.bindAll({
 
         _handlers: setupHandlers(),
-        //BEGIN-DEBUG
-        // Event cache is only used by debug-events at the moment, so
-        // doesn't have to be part of regular build.
-        _eventCache: {},
-        //END-DEBUG
 
         emit: function(eventName) {
           var handlerArgs = Array.prototype.slice.call(arguments, 1);
-          // console.log("EMIT", eventName, handlerArgs);
-          validEvent.call(this, eventName);
+          // eventName validation happens in hasHandler
           if(this.hasHandler(eventName)) {
             this._handlers[eventName].forEach(function(handler) {
               if(handler) {
-                handler.apply(null, handlerArgs);
+                try {
+                  handler.apply(null, handlerArgs);
+                } catch(exc) {
+                  if(eventName !== 'error' && 'error' in this._handlers && this.hasHandler('error')) {
+                    this.emit('error', exc);
+                  } else {
+                    console.error("Error in '" + eventName + "' event handler:", exc);
+                  }
+                }
               }
-            });
+            }.bind(this));
           }
-          //BEGIN-DEBUG
-          else if(eventName in this._eventCache) {
-            this._eventCache[eventName].push(handlerArgs);
-          }
-          //END-DEBUG
-        },
-
-        once: function(eventName, handler) {
-          validEvent.call(this, eventName);
-          var i = this._handlers[eventName].length;
-          if(typeof(handler) !== 'function') {
-            throw "Expected function as handler, got: " + typeof(handler);
-          }
-          this.on(eventName, function() {
-            delete this._handlers[eventName][i];
-            handler.apply(this, arguments);
-          }.bind(this));
         },
 
         on: function(eventName, handler) {
@@ -839,14 +665,6 @@ define('lib/util',[], function() {
             throw "Expected function as handler, got: " + typeof(handler);
           }
           this._handlers[eventName].push(handler);
-          //BEGIN-DEBUG
-          if(this._eventCache[eventName]) {
-            this._eventCache[eventName].forEach(function(args) {
-              handler.apply(null, args);
-            });
-            delete this._eventCache[eventName];
-          }
-          //END-DEBUG
         },
 
         reset: function() {
@@ -857,15 +675,6 @@ define('lib/util',[], function() {
           validEvent.call(this, eventName);
           return this._handlers[eventName].length > 0;
         }
-
-        //BEGIN-DEBUG
-        ,
-        enableEventCache: function() {
-          util.toArray(arguments).forEach(util.bind(function(eventName) {
-            this._eventCache[eventName] = [];
-          }, this));
-        }
-        //END-DEBUG
 
       });
 
@@ -1023,21 +832,7 @@ define('lib/util',[], function() {
       keys.forEach(iter);
     },
 
-    getPromise: function() {
-      return new Promise();
-    },
-
-    // Function: isPromise
-    // Tests whether the given Object is a <Promise>.
-    //
-    // This method only checks for a "then" property, that is a function.
-    // That way it can interact with other implementations of Promises/A
-    // as well.
-    isPromise: function(object) {
-      return typeof(object) === 'object' && typeof(object.then) === 'function';
-    },
-
-    // Function: makePromise
+    // Function: getPromise
     // Create a new <Promise> object, and run given function.
     //
     // Returns: the created promise.
@@ -1051,21 +846,21 @@ define('lib/util',[], function() {
     // Example:
     //   (start code)
     //   function a() {
-    //     return util.makePromise(function(promise) {
+    //     return util.getPromise(function(promise) {
     //       // promise will be fulfilled in next tick
     //       promise.fulfill(a + b);
     //     });
     //   }
     //
     //   function b() {
-    //     return util.makePromise(function(promise) {
+    //     return util.getPromise(function(promise) {
     //       // promise will be fulfilled as soon as the returned promise is fulfilled
     //       return asyncFunctionReturningPromise();
     //     });
     //   }
     //
     //   function c() {
-    //     return util.makePromise(function(promise) {
+    //     return util.getPromise(function(promise) {
     //       // promise will fail with the thrown exception as it's result value
     //       throw new Error("Something went wrong!");
     //     });
@@ -1078,22 +873,121 @@ define('lib/util',[], function() {
     //   });
     //   (end code)
     //
-    makePromise: function(futureCallback) {
-      var promise = new Promise();
-      util.nextTick(function() {
-        try {
-          var result = futureCallback(promise);
-          if(result && result.then && typeof(result.then) === 'function') {
-            result.then(
-              promise.fulfill.bind(promise),
-              promise.fail.bind(promise)
-            );
+    getPromise: function(builder) {
+      var promise;
+
+      if(typeof(builder) === 'function') {
+        setTimeout(function() {
+          try {
+            builder(promise);
+          } catch(e) {
+            promise.reject(e);
           }
-        } catch(exc) {
-          promise.fail(exc);
+        }, 0);
+      }
+
+      var consumers = [], success, result;
+
+      function notifyConsumer(consumer) {
+        if(success) {
+          var nextValue;
+          if(consumer.fulfilled) {
+            try {
+              nextValue = [consumer.fulfilled.apply(null, result)];
+            } catch(exc) {
+              consumer.promise.reject(exc);
+              return;
+            }
+          } else {
+            nextValue = result;
+          }
+          if(nextValue[0] && typeof(nextValue[0].then) === 'function') {
+            nextValue[0].then(consumer.promise.fulfill, consumer.promise.reject);
+          } else {
+            consumer.promise.fulfill.apply(null, nextValue);
+          }
+        } else {
+          if(consumer.rejected) {
+            var ret;
+            try {
+              ret = consumer.rejected.apply(null, result);
+            } catch(exc) {
+              consumer.promise.reject(exc);
+              return;
+            }
+            if(ret && typeof(ret.then) === 'function') {
+              ret.then(consumer.promise.fulfill, consumer.promise.reject);
+            } else {
+              consumer.promise.fulfill(ret);
+            }
+          } else {
+            consumer.promise.reject.apply(null, result);
+          }
         }
-      });
+      }
+
+      function resolve(succ, res) {
+        if(result) {
+          console.log("WARNING: Can't resolve promise, already resolved!");
+          console.trace();
+          return;
+        }
+        success = succ;
+        result = Array.prototype.slice.call(res);
+        setTimeout(function() {
+          var cl = consumers.length;
+          if(cl === 0 && (! success)) {
+            var error = result[0] instanceof Error ? (result[0].message + '\n' + result[0].stack) : result;
+            console.error("Possibly uncaught error: ", error);
+          }
+          for(var i=0;i<cl;i++) {
+            notifyConsumer(consumers[i]);
+          }
+          consumers = undefined;
+        }, 0);
+      }
+
+      promise = {
+
+        then: function(fulfilled, rejected) {
+          var consumer = {
+            fulfilled: typeof(fulfilled) === 'function' ? fulfilled : undefined,
+            rejected: typeof(rejected) === 'function' ? rejected : undefined,
+            promise: util.getPromise()
+          };
+          if(result) {
+            setTimeout(function() {
+              notifyConsumer(consumer)
+            }, 0);
+          } else {
+            consumers.push(consumer);
+          }
+          return consumer.promise;
+        },
+
+        fulfill: function() {
+          resolve(true, arguments);
+          return this;
+        },
+        
+        reject: function() {
+          resolve(false, arguments);
+          return this;
+        }
+        
+      };
+
       return promise;
+    },
+
+    // Function: isPromise
+    // Tests whether the given Object is a <Promise>.
+    //
+    // This method only checks for a "then" property, that is a function.
+    // That way it can interact with other implementations of Promises/A
+    // as well.
+    isPromise: function(object) {
+      return typeof(object) === 'object' && typeof(object.then) === 'function';
     },
 
     // Function: asyncGroup
@@ -1122,7 +1016,7 @@ define('lib/util',[], function() {
     //   (start code)
     //   return util.asyncGroup(
     //     function() { // asynchronous function
-    //       return util.makePromise(function(p) {
+    //       return util.getPromise(function(p) {
     //         asyncGetSomeNumber(function(number) { p.fulfill(number) });
     //       });
     //     },
@@ -1140,7 +1034,7 @@ define('lib/util',[], function() {
       var results = [];
       var todo = functions.length;
       var errors = [];
-      return util.makePromise(function(promise) {
+      return util.getPromise(function(promise) {
         //BEGIN-DEBUG
         clearTimeout(promise.debugTimer);
         //END-DEBUG
@@ -1187,7 +1081,7 @@ define('lib/util',[], function() {
     // same semantics as in <util.asyncGroup>.
     //
     asyncEach: function(array, iterator) {
-      return util.makePromise(function(promise) {
+      return util.getPromise(function(promise) {
         util.asyncGroup.apply(
           util, array.map(function(element, index) {
             return util.curry(iterator, element, index);
@@ -1413,7 +1307,7 @@ define('lib/platform',['./util'], function(util) {
   }
 
   function ajaxBrowser(params) {
-    return util.makePromise(function(promise) {
+    return util.getPromise(function(promise) {
       var timedOut = false;
       var timer;
       var xhr = new XMLHttpRequest();
@@ -1421,7 +1315,7 @@ define('lib/platform',['./util'], function(util) {
         timer = window.setTimeout(function() {
           timedOut = true;
           xhr.abort();
-          promise.fail('timeout');
+          promise.reject('timeout');
         }, params.timeout);
       }
 
@@ -1439,6 +1333,9 @@ define('lib/platform',['./util'], function(util) {
 
       xhr.onreadystatechange = function() {
         if((xhr.readyState == 4)) {
+          if(timedOut) {
+            return;
+          }
           if(timer) {
             window.clearTimeout(timer);
           }
@@ -1456,7 +1353,7 @@ define('lib/platform',['./util'], function(util) {
             promise.fulfill(xhr.responseText, headers);
           } else {
             logger.debug("REQUEST FAILED", xhr.status, params.url);
-            promise.fail(xhr.status || 'network error');
+            promise.reject(xhr.status || 'network error');
           }
         }
       };
@@ -1477,15 +1374,15 @@ define('lib/platform',['./util'], function(util) {
       if(xdr.status == 200 || xdr.status == 201 || xdr.status == 204) {
         promise.fulfill(xdr.responseText);
       } else {
-        params.fail(xdr.status);
+        params.reject(xdr.status);
       }
     };
     xdr.onerror = function() {
       // See http://msdn.microsoft.com/en-us/library/ms536930%28v=vs.85%29.aspx
-      promise.fail('network error');
+      promise.reject('network error');
     };
     xdr.ontimeout = function() {
-      promise.fail('timeout');
+      promise.reject('timeout');
     };
     if(params.data) {
       xdr.send(params.data);
@@ -1496,7 +1393,7 @@ define('lib/platform',['./util'], function(util) {
 
   function ajaxNode(params) {
 
-    return util.makePromise(function(promise) {
+    return util.getPromise(function(promise) {
 
       if(typeof(params.data) === 'object' && params.data instanceof ArrayBuffer) {
         throw new Error("Sending binary data not yet implemented for nodejs");
@@ -1525,7 +1422,7 @@ define('lib/platform',['./util'], function(util) {
 
       if(params.timeout) {
         timer = setTimeout(function() {
-          promise.fail('timeout');
+          promise.reject('timeout');
           timedOut=true;
         }, params.timeout);
       }
@@ -1545,7 +1442,7 @@ define('lib/platform',['./util'], function(util) {
             if(response.statusCode==200 || response.statusCode==201 || response.statusCode==204) {
               promise.fulfill(str, normalizeHeaders(response.headers));
             } else {
-              promise.fail(response.statusCode);
+              promise.reject(response.statusCode);
             }
           }
         });
@@ -1554,7 +1451,7 @@ define('lib/platform',['./util'], function(util) {
         if(timer) {
           clearTimeout(timer);
         }
-        promise.fail(e && e.message);
+        promise.reject(e && e.message);
       });
       if(params.data) {
         request.end(params.data);
@@ -1696,10 +1593,10 @@ define('lib/webfinger',
     }
 
     function parseXRD(str) {
-      return util.makePromise(function(promise) {
+      return util.getPromise(function(promise) {
         platform.parseXml(str, function(err, obj) {
           if(err) {
-            promise.fail(err);
+            promise.reject(err);
           } else {
             if(obj && obj.Link) {
               var links = {};
@@ -1716,7 +1613,7 @@ define('lib/webfinger',
               }
               promise.fulfill(links);
             } else {
-              promise.fail('invalid-xml');
+              promise.reject('invalid-xml');
             }
           }
         });
@@ -1750,7 +1647,7 @@ define('lib/webfinger',
         if(mimeType && mimeType.match(/^application\/json/)) {
           return parseJRD(body);
         } else {
-          return util.makePromise(function(jrdPromise) {
+          return util.getPromise(function(jrdPromise) {
             parseXRD(body).then(
               function(xrd) {
                 jrdPromise.fulfill(xrd);
@@ -1788,6 +1685,11 @@ define('lib/webfinger',
         });
     }
 
+    var typeAliasMap = {
+      'draft-dejong-remotestorage-00': 'remotestorage-00',
+      'https://www.w3.org/community/rww/wiki/read-write-web-00#simple': '2012.04'
+    }
+
     function extractRemoteStorageLink(links) {
       logger.debug('extract remoteStorage link', links);
       var remoteStorageLink = links.remoteStorage || links.remotestorage;
@@ -1798,6 +1700,9 @@ define('lib/webfinger',
            remoteStorageLink.type &&
            remoteStorageLink.properties &&
            remoteStorageLink.properties['auth-endpoint']) {
+          console.log('lookup in typeAliasMap', remoteStorageLink.type, typeAliasMap);
+          remoteStorageLink.type = typeAliasMap[remoteStorageLink.type] || remoteStorageLink.type;
+          console.log('->', remoteStorageLink.type);
           return remoteStorageLink;
         } else {
           throw new Error("Invalid remoteStorage link. Required properties are:" +
@@ -1839,32 +1744,29 @@ define('lib/webfinger',
 
        */
 
-      try {
-        var hostname = extractHostname(userAddress)
-      } catch(error) {
-        if(error) {
-          return util.getPromise().failLater(error);
+      return util.getPromise(function(promise) {
+        try {
+          var hostname = extractHostname(userAddress)
+        } catch(error) {
+          if(error) {
+            return promise.reject(error);
+          }
         }
-      }
-      var query = '?resource=acct:' + encodeURIComponent(userAddress);
-      var addresses = [
-        '://' + hostname + '/.well-known/webfinger' + query,
-        '://' + hostname + '/.well-known/host-meta.json' + query,
-        '://' + hostname + '/.well-known/host-meta' + query,
-      ];
+        var query = '?resource=acct:' + encodeURIComponent(userAddress);
+        var addresses = [
+          '://' + hostname + '/.well-known/webfinger' + query,
+          '://' + hostname + '/.well-known/host-meta.json' + query,
+          '://' + hostname + '/.well-known/host-meta' + query,
+        ];
 
-      return util.makePromise(function(promise) {
         fetchHostMeta('https', addresses).
           then(extractRemoteStorageLink, function() {
             return fetchHostMeta('http', addresses).
-              then(extractRemoteStorageLink).
-              then(function(profile) {
-                promise.fulfill(profile);
-              }, promise.fail.bind(promise));
+              then(extractRemoteStorageLink);
           }).
           then(function(profile) {
             promise.fulfill(profile);
-          }, promise.fail.bind(promise));
+          }, promise.reject);
       });
     }
 
@@ -1894,7 +1796,7 @@ define('lib/getputdelete',
     var timeout = 10000;
 
     function realDoCall(method, url, body, mimeType, token) {
-      return util.makePromise(function(promise) {
+      return util.getPromise(function(promise) {
         logger.info(method, url);
         var platformObj = {
           url: url,
@@ -1940,7 +1842,7 @@ define('lib/getputdelete',
             } else if(error === 401 || error === 403) {
               error = 'unauthorized';
             };
-            promise.fail(error);
+            promise.reject(error);
           });
       });
     }
@@ -1955,7 +1857,7 @@ define('lib/getputdelete',
         inProgress--;
         if(pendingQueue.length > 0) {
           var c = pendingQueue.shift();
-          doCall.apply(this, c.a).then(c.p.fulfill.bind(c.p), c.p.fail.bind(c.p));
+          doCall.apply(this, c.a).then(c.p.fulfill, c.p.reject);
         } else {
         }
       }
@@ -1963,13 +1865,13 @@ define('lib/getputdelete',
         inProgress++;
         return realDoCall.apply(this, arguments).then(function(data, mimeType) {
           finishOne();
-          return util.makePromise(function(p) { p.fulfill(data, mimeType); });
+          return util.getPromise(function(p) { p.fulfill(data, mimeType); });
         }, function(error) {
           finishOne();
           throw error;
         });
       } else {
-        return util.makePromise(function(p) {
+        return util.getPromise(function(p) {
           pendingQueue.push({
             a: args,
             p: p
@@ -2423,19 +2325,19 @@ define('lib/store/memory',['../util', './syncTransaction'], function(util, syncT
     var store = {
       get: function(path) {
         logger.info('get', path);
-        return util.getPromise().fulfillLater(nodes[path]);
+        return util.getPromise().fulfill(nodes[path]);
       },
 
       set: function(path, node) {
         logger.info('set', path, node.data);
         nodes[path] = node;
-        return util.getPromise().fulfillLater();
+        return util.getPromise().fulfill();
       },
 
       remove: function(path) {
         logger.info('remove', path);
         delete nodes[path];
-        return util.getPromise().fulfillLater();
+        return util.getPromise().fulfill();
       }
     };
 
@@ -2448,7 +2350,7 @@ define('lib/store/memory',['../util', './syncTransaction'], function(util, syncT
       forgetAll: function() {
         logger.info('forgetAll');
         this._nodes = nodes = {};
-        return util.getPromise().fulfillLater();
+        return util.getPromise().fulfill();
       },
 
       hasKey: function(path) {
@@ -2464,7 +2366,7 @@ define('lib/store/memory',['../util', './syncTransaction'], function(util, syncT
       // TESTS & DEBUGGING
 
       printTree: function() {
-        var printOne = function(path, indent) {
+        var printOne = util.bind(function(path, indent) {
           return this.get(path).
             then(function(node) {
               if(! node) {
@@ -2481,21 +2383,16 @@ define('lib/store/memory',['../util', './syncTransaction'], function(util, syncT
                             node.mimeType);
               }
             });
-        }.bind(this);
+        }, this);
 
         return printOne('/', '');
       },
 
       // FIXME: implement through 'set' and move to common.
-      init: function(dataTree, mimeType, timestamp, access) {
+      init: function(dataTree, mimeType, timestamp) {
         this.forgetAll();
-        var initNode = function (path, tree) {
+        var initNode = util.bind(function(path, tree) {
           var node = {
-            startAccess: Object.keys(access).reduce(function(a, k) {
-              return (k === path) ? access[k] : a;
-            }, null),
-            startForce: null,
-            startForceTree: null,
             timestamp: timestamp,
             lastUpdatedAt: timestamp
           };
@@ -2516,7 +2413,7 @@ define('lib/store/memory',['../util', './syncTransaction'], function(util, syncT
             node.data = tree;
           }
           nodes[path] = node;
-        }.bind(this);
+        }, this);
 
         initNode('/', dataTree);
       }
@@ -2578,19 +2475,7 @@ define('lib/store/localStorage',['../util', './common', './syncTransaction'], fu
 
   var logger = util.getLogger('store::localStorage');
 
-  var events = util.getEventEmitter('change', 'debug');
-
-  //BEGIN-DEBUG
-  function debugEvent(method, path) {
-    events.emit('debug', {
-      method: method,
-      path: path,
-      timestamp: new Date()
-    });
-  }
-  
-  events.enableEventCache('debug');
-  //END-DEBUG
+  var events = util.getEventEmitter('change');
 
   // node metadata key prefix
   var prefixNodes = 'remote_storage_nodes:';
@@ -2628,11 +2513,8 @@ define('lib/store/localStorage',['../util', './common', './syncTransaction'], fu
 
     var store = {
       get: function(path) {
-        //BEGIN-DEBUG
-        debugEvent('GET', path);
-        //END-DEBUG
         logger.debug('GET', path);
-        return util.makePromise(function(promise) {
+        return util.getPromise(function(promise) {
           var rawMetadata = localStorage.getItem(prefixNode(path));
           if(! rawMetadata) {
             promise.fulfill(undefined);
@@ -2640,23 +2522,26 @@ define('lib/store/localStorage',['../util', './common', './syncTransaction'], fu
           }
           var payload = localStorage.getItem(prefixData(path));
           var node;
-          try {
-            node = JSON.parse(rawMetadata);
-          } catch(exc) {
+          if(rawMetadata !== 'null') {
+            try {
+              node = JSON.parse(rawMetadata);
+            } catch(exc) {
+            }
           }
           if(node) {
-            node.data = payload;
+            if(util.isDir(path) && payload === 'null') {
+              node.data = {};
+            } else {
+              node.data = payload;
+            }
           }
           promise.fulfill(common.unpackData(node));
         });
       },
 
       set: function(path, node) {
-        //BEGIN-DEBUG
-        debugEvent('SET', path);
-        //END-DEBUG
         logger.debug('SET', path, node);
-        return util.makePromise(function(promise) {
+        return util.getPromise(function(promise) {
           var metadata = common.packData(node);
           var rawData = metadata.data;
           delete metadata.data;
@@ -2670,11 +2555,8 @@ define('lib/store/localStorage',['../util', './common', './syncTransaction'], fu
       },
 
       remove: function(path) {
-        //BEGIN-DEBUG
-        debugEvent('REMOVE', path);
-        //END-DEBUG
         logger.debug('SET', path);
-        return util.makePromise(function(promise) {
+        return util.getPromise(function(promise) {
           localStorage.removeItem(prefixNode(path));
           localStorage.removeItem(prefixData(path));
           promise.fulfill();
@@ -2687,7 +2569,7 @@ define('lib/store/localStorage',['../util', './common', './syncTransaction'], fu
       on: events.on,
 
       forgetAll: function() {
-        return util.makePromise(function(promise) {
+        return util.getPromise(function(promise) {
           var numLocalStorage = localStorage.length;
           var keys = [];
           for(var i=0; i<numLocalStorage; i++) {
@@ -2719,7 +2601,7 @@ define('lib/store/pending',['../util'], function(util) {
     function queueRequest(name, args, dontPromise) {
       logger.debug(name, args[0]);
       if(! dontPromise) {
-        return util.makePromise(function(promise) {
+        return util.getPromise(function(promise) {
           requestQueue.push({
             method: name,
             args: args,
@@ -2758,8 +2640,8 @@ define('lib/store/pending',['../util'], function(util) {
           logger.debug('QUEUE FLUSH', request.method, request.args[0]);
           if(request.promise) {
             adapter[request.method].apply(adapter, request.args).
-              then(request.promise.fulfill.bind(request.promise),
-                   request.promise.fail.bind(request.promise));
+              then(request.promise.fulfill,
+                   request.promise.reject);
           } else {
             adapter[request.method].apply(adapter, request.args);
           }
@@ -2851,9 +2733,6 @@ define('lib/store',[
   // Represents a node within the local store.
   //
   // Properties:
-  //   startAccess    - either "r" or "rw". Flag means, that this node has been claimed access on (see <remoteStorage.claimAccess>) (default: null)
-  //   startForce     - boolean flag to indicate that this node shall always be synced. (see <BaseClient.use> and <BaseClient.release>) (default: null)
-  //   startForceTree - boolean flag that all directory children of this node shall be synced.
   //   timestamp      - last time this node was (apparently) updated (default: 0)
   //   lastUpdatedAt  - Last time this node was upated from remote storage
   //   mimeType       - MIME media type
@@ -2867,14 +2746,13 @@ define('lib/store',[
 
   function fireChange(origin, path, oldValue) {
     return getNode(path).
-      get('data', 'timestamp').
-      then(function(newValue, timestamp) {
+      then(function(node) {
         events.emit('change', {
           path: path,
           origin: origin,
           oldValue: oldValue,
-          newValue: newValue,
-          timestamp: timestamp
+          newValue: node.data,
+          timestamp: node.timestamp
         });
       });
   }
@@ -2884,13 +2762,12 @@ define('lib/store',[
 
   function fireForeignChange(path, oldValue) {
     return getNode(path).
-      get('data', 'timestamp').
-      then(function(newValue, timestamp) {
+      then(function(node) {
         events.emit('foreign-change', {
           path: path,
           oldValue: oldValue,
-          newValue: newValue,
-          timestamp: timestamp
+          newValue: node.data,
+          timestamp: node.timestamp
         });
       });
   }
@@ -2924,9 +2801,6 @@ define('lib/store',[
     return dataStore.get(path).then(function(node) {
       if(! node) {
         node = {//this is what an empty node looks like
-          startAccess: null,
-          startForce: null,
-          startForceTree: null,
           timestamp: 0,
           lastUpdatedAt: 0,
           mimeType: "application/json"
@@ -2964,7 +2838,6 @@ define('lib/store',[
   //   change w/ origin=remote - unless this is an outgoing change
   //
   function setNodeData(path, data, outgoing, timestamp, mimeType) {
-    logger.debug('PUT', path, { data: data, mimeType: mimeType });
     return dataStore.transaction(true, function(transaction) {
       return getNode(path, transaction).then(function(node) {
 
@@ -2986,43 +2859,11 @@ define('lib/store',[
         }
         node.mimeType = mimeType;
 
-        // FIXME: only set this when incoming data is set?
-        delete node.pending;
-
         return updateNode(path, (typeof(node.data) !== 'undefined' ? node : undefined), outgoing, false, timestamp, oldValue, transaction).
           then(function() {
             transaction.commit();
           });
       });      
-    });
-  }
-
-  function setNodePending(path, timestamp) {
-    return dataStore.transaction(true, function(transaction) {
-      return isForced(util.containingDir(path), transaction).
-        then(function(isForced) {
-          var paths = [path];
-          if(! isForced) {
-            var parts = util.pathParts(path);
-            var pl = parts.length;
-            for(var i=parts.length - 1;i>0;i--) {
-              paths.unshift(parts.slice(0, i).join(''));
-            }
-          }
-          return util.asyncEach(paths, function(p) {
-            return getNode(p, transaction).then(function(node) {
-              // clear only data nodes (we want to preserve pending listings)
-              if(! util.isDir(p)) {
-                delete node.data;
-              }
-              node.pending = true;
-              return updateNode(p, node, false, false, timestamp, undefined, transaction);
-            });
-          });
-        }).
-        then(function() {
-          transaction.commit();
-        });
     });
   }
 
@@ -3057,47 +2898,9 @@ define('lib/store',[
     }
   }
 
-  // Method: setNodeAccess
-  //
-  // Set startAccess flag on a node.
-  //
-  // Parameters:
-  //   path  - absolute path to the node
-  //   claim - claim to set. Either "r" or "rw"
-  //
-  function setNodeAccess(path, claim) {
-    logger.debug('setNodeAccess', path, claim);
-    return getNode(path).then(function(node) {
-      if((claim !== node.startAccess) &&
-         (claim === 'rw' || node.startAccess === null)) {
-        return updateMetadata(path, {
-          startAccess: claim
-        }, node);
-      }
-    });
-  }
-
   function setNodeError(path, error) {
-    logger.debug('setNodeError', path, error);
     return updateMetadata(path, {
       error: error
-    });
-  }
-
-  // Method: setNodeForce
-  //
-  // Set startForce and startForceTree flags on a node.
-  //
-  // Parameters:
-  //   path      - absolute path to the node
-  //   dataFlag  - whether to sync data
-  //   treeFlag  - whether to sync the tree
-  //
-  function setNodeForce(path, dataFlag, treeFlag) {
-    logger.debug('setNodeForce', path, dataFlag, treeFlag);
-    return updateMetadata(path, {
-      startForce: dataFlag,
-      startForceTree: treeFlag
     });
   }
 
@@ -3115,7 +2918,6 @@ define('lib/store',[
   //   timestamp - new timestamp (received from remote) to set on the node.
   //
   function clearDiff(path, timestamp) {
-    logger.debug('clearDiff', path);
     return getNode(path).then(function(node) {
 
       function clearDiffOnParent() {
@@ -3136,8 +2938,7 @@ define('lib/store',[
         }
       }
 
-      if(util.isDir(path) && Object.keys(node.data).length === 0 &&
-         !(node.startAccess || node.startForce || node.startForceTree)) {
+      if(util.isDir(path) && Object.keys(node.data).length === 0) {
         // remove empty dir
         return updateNode(path, undefined, false, false).then(clearDiffOnParent);
       } else if(timestamp) {
@@ -3174,7 +2975,7 @@ define('lib/store',[
           }
         });
       } else {
-        return fireChange('device', path);
+        return fireChange('remote', path);
       }
     }
 
@@ -3206,12 +3007,12 @@ define('lib/store',[
 
   function determineDirTimestamp(path, transaction) {
     return getNode(path, transaction).
-      get('data').then(function(data) {
+      then(function(node) {
         var t = 0;
-        if(data) {
-          for(var key in data) {
-            if(data[key] > t) {
-              t = data[key];
+        if(node.data) {
+          for(var key in node.data) {
+            if(node.data[key] > t) {
+              t = node.data[key];
             }
           }
         }
@@ -3221,15 +3022,11 @@ define('lib/store',[
 
   function touchNode(path) {
     return dataStore.transaction(true, function(transaction) {
-      logger.info("touchNode", path);
-      return getNode(path, transaction).
-        then(function(node) {
-          if(typeof(node.data) === 'undefined') {
-            node.pending = true;
-          }
-          return updateNode(path, node, false, true, undefined, undefined, transaction).
-            then(transaction.commit);
-        });
+      return getNode(path, transaction).then(function(node) {
+        return updateNode(
+          path, node, false, true, undefined, undefined, transaction
+        ).then(transaction.commit);
+      });
     });
   }
 
@@ -3241,8 +3038,7 @@ define('lib/store',[
     validPath(path);
 
     function adjustTimestamp(transaction) {
-      logger.debug('updateNode.adjustTimestamp', path);
-      return util.makePromise(function(promise) {
+      return util.getPromise(function(promise) {
         function setTimestamp(t) {
           if(t) { timestamp = t; }
           if(node && typeof(timestamp) == 'number') {
@@ -3266,7 +3062,6 @@ define('lib/store',[
     }
 
     function storeNode(transaction) {
-      logger.debug('updateNode.storeNode', path, node);
       if(node) {
         return transaction.set(path, node);
       } else {
@@ -3282,31 +3077,25 @@ define('lib/store',[
           then(function(parent) {
             if(meta) { // META
               if(! parent.data[baseName]) {
-                logger.debug('-> meta, create');
                 parent.data[baseName] = 0;
                 return updateNode(parentPath, parent, false, true, timestamp, undefined, transaction);
               }
             } else if(outgoing) { // OUTGOING
               if(node) {
-                logger.debug('-> outgoing, set');
                 parent.data[baseName] = timestamp;
               } else {
-                logger.debug('-> outgoing, remove');
                 delete parent.data[baseName];
               }
               parent.diff[baseName] = timestamp;
-              logger.debug('-> diff, update');
               return updateNode(parentPath, parent, true, false, timestamp, undefined, transaction);
             } else { // INCOMING
               if(node) { // add or change
                 if((! parent.data[baseName]) || parent.data[baseName] < timestamp) {
-                  logger.debug('-> incoming, set');
                   parent.data[baseName] = timestamp;
                   delete parent.diff[baseName];
                   return updateNode(parentPath, parent, false, false, timestamp, undefined, transaction);
                 }
               } else { // deletion
-                logger.debug('-> incoming, remove');
                 delete parent.data[baseName];
                 delete parent.diff[baseName];
                 return updateNode(parentPath, parent, false, false, timestamp, undefined, transaction);
@@ -3317,7 +3106,7 @@ define('lib/store',[
     }
 
     function fireEvents() {
-      if((!meta) && (! outgoing) && (! util.isDir(path)) && (! node.pending)) {
+      if((!meta) && (! outgoing) && (! util.isDir(path))) {
         // fire changes
         if(isForeign(path)) {
           return fireForeignChange(path, oldValue);
@@ -3346,34 +3135,6 @@ define('lib/store',[
     }
   }
 
-  function isForced(path, transaction) {
-    var parts = util.pathParts(path);
-
-    return util.makePromise(function(promise) {
-
-      function checkOne(node) {
-        if(node.startForce || node.startForceTree) {
-          promise.fulfill(true);
-        } else {
-          parts.pop();
-          checkNext();
-        }
-      }
-
-      function checkNext() {
-        if(parts.length === 0) {
-          promise.fulfill(false);
-        } else {
-          getNode(parts.join(''), transaction).
-            then(checkOne, promise.fail.bind(promise));
-        }
-      }
-
-      checkNext();
-
-    });
-  }
-
   return {
 
     memory: memoryAdapter,
@@ -3386,19 +3147,14 @@ define('lib/store',[
 
     getNode           : getNode,          // sync
     setNodeData       : setNodeData,      // sync
-    setNodePending    : setNodePending,   // sync
     clearDiff         : clearDiff,        // sync
     removeNode        : removeNode,       // sync
     setLastSynced     : setLastSynced,    // sync
-
-    isForced          : isForced,         // baseClient
+    touchNode         : touchNode,        // sync
 
     on                : events.on,
     emit              : events.emit,
-    setNodeAccess     : setNodeAccess,
-    setNodeForce      : setNodeForce,
     setNodeError      : setNodeError,
-    touchNode         : touchNode,
 
     forgetAll         : forgetAll,        // widget
     fireInitialEvents : fireInitialEvents,// widget
@@ -3456,7 +3212,7 @@ define('lib/store/remoteCache',[
     var cache = memoryAdapter('store::remote_cache_backend');
 
     function determineTimestamp(path) {
-      return util.makePromise(function(promise) {
+      return util.getPromise(function(promise) {
         var parentPath = util.containingDir(path);
         if(parentPath && cache.hasKey(parentPath)) {
           var baseName = util.baseName(path)
@@ -3467,7 +3223,7 @@ define('lib/store/remoteCache',[
               if(typeof(error) === 'undefined') {
                 promise.fulfill(new Date().getTime());
               } else {
-                promise.fail(error);
+                promise.reject(error);
               }
             });
         } else {
@@ -3544,12 +3300,8 @@ define('lib/sync',[
 
   var remoteAdapter = remoteCacheAdapter();
 
-  var events = util.getEventEmitter('error', 'conflict', 'state', 'busy', 'ready', 'timeout', 'debug');
+  var events = util.getEventEmitter('error', 'conflict', 'state', 'busy', 'ready', 'timeout');
   var logger = util.getLogger('sync');
-
-  //BEGIN-DEBUG
-  events.enableEventCache('debug');
-  //END-DEBUG
 
   /*******************/
   /* Namespace: sync */
@@ -3559,81 +3311,15 @@ define('lib/sync',[
 
   var settings = util.getSettingStore('remotestorage_sync');
 
-
-  // Section: How to configure sync
-  //
-  // remoteStorage.js takes care of all the synchronization of remote and local data.
-  //
-  // As an app developer you need to do three things, to make it work:
-  // * claim access on the root of the tree in question (see <remoteStorage.claimAccess>)
-  // * state which branches you wish to have synced
-  // * release paths you no longer need from the sync plan, so they won't impact performance
-  //
-  // Now suppose you have a data tree like this:
-  //   (start code)
-  //
-  //         A
-  //        / \
-  //       B   C
-  //      / \   \
-  //     d   E   f
-  //        / \
-  //       g   h
-  //
-  //   (end code)
-  //
-  // Let's consider *A* to be our root node (it may be a module root, doesn't
-  // really matter for this example), and let's say we have a <BaseClient>
-  // instance called *client*, that treats paths relative to *A*.
-  //
-  // The simplest thing we can do, is request everything:
-  //   > client.use('');
-  // Now as soon as sync is triggered (usually this happens when connecting
-  // through the widget), the entire tree, with all it's nodes, including data
-  // nodes (files) will be synchronized and cached to localStorage.
-  //
-  // If we previously set up a 'change' handler, it will now be called for each
-  // data node, as it has been synchronized.
-  //
-  // At this point, we can use the synchronous versions of the <BaseClient>
-  // methods for getting data. These methods will only hit the local cache (they
-  // may trigger <syncOne>, but we'll get to that later).
-  //   > client.getListing('B/'); // -> ['d', 'E/']
-  //   > client.getObject('B/d'); // -> { ... }
-  //
-  // That was the simplest usecase. Let's look at another one:
-  //
-  // Suppose that all the data files within our tree contain a lot of data. They
-  // could be music, videos, large images etc. Given that, it would be very
-  // impractical to transfer all of them, even though we don't know at this point
-  // if the user even wants to use them in the current session.
-  // So one option we have, is to tell remoteStorage only to synchronize the
-  // *directory tree*, but not the content of files.
-  //   > client.use('', true);
-  // The second argument given is called *treeOnly*.
-  //
-  // When we now (after the 'ready' event has been fired) use *getListing*, we
-  // still get a listing of all known paths:
-  //   > client.getListing(''); // -> ['B/', 'C/']
-  //   > client.getListing('B/'); // -> ['d', 'E/']
-  //
-  // Getting an object on the other hand, will not return anything.
-  //   > client.getObject('B/d'); // -> undefined
-  //
-  // We can use this scenario, to display a *tree of available data* to the user.
-  // As soon as the user chooses one of the items, we can retrieve it, by passing
-  // a callback to getObject:
-  //   > client.getObject('B/d', function(object) {
-  //   >   console.log("received object is: ", object);
-  //   > });
-  //
+  // hack! set from remoteStorage via setAccess, setCaching.
+  var access, caching;
 
   function needsSync(path) {
     if(! path) {
       path = '/';
     }
     if(! util.isDir(path)) {
-      return util.getPromise().fulfillLater(false);
+      return util.getPromise().fulfill(false);
     }
     return store.getNode(path).then(function(root) {
       if(Object.keys(root.diff).length > 0) {
@@ -3691,44 +3377,55 @@ define('lib/sync',[
   //   change   - when the local store is updated
   //
   function fullSync(pushOnly) {
-    return util.makePromise(function(promise) {
+    return util.getPromise(function(promise) {
       if(disabled) {
-        promise.fulfillLater()
+        promise.fulfill();
         return;
       }
       if(! isConnected()) {
-        promise.fail('not-connected');
+        promise.reject('not-connected');
         return;
       }
 
       logger.info("full " + (pushOnly ? "push" : "sync") + " started");
 
-      findRoots().then(function(roots) {
-        logger.debug("SYNCING ROOTS", roots);
-        var synced = 0;
+      var roots = [];
 
-        function rootCb(path) {
-          return function() {
-            logger.debug("SYNCED ROOT", path);
-            synced++;
-            if(synced == roots.length) {
-              sync.lastSyncAt = new Date();
-              promise.fulfill();
-            }
-          };
+      var cl = caching.rootPaths.length;
+      var al = access.rootPaths.length;
+      for(var i=0;i<cl;i++) {
+        var cachingRoot = caching.rootPaths[i];
+        for(var j=0;i<al;j++) {
+          var accessRoot = access.rootPaths[j];
+          if(util.pathContains(cachingRoot, accessRoot)) {
+            roots.push(cachingRoot);
+            break;
+          }
         }
+      }
 
-        if(roots.length === 0) {
-          return promise.fail(new Error("No access claimed!"));
-        }
+      var synced = 0;
 
-        roots.forEach(function(root) {
-          enqueueTask(function() {
-            return traverseTree(root, processNode, {
-              pushOnly: pushOnly
-            });
-          }, rootCb(root));
-        });
+      function rootCb(path) {
+        return function() {
+          synced++;
+          if(synced == roots.length) {
+            sync.lastSyncAt = new Date();
+            promise.fulfill();
+          }
+        };
+      }
+
+      if(roots.length === 0) {
+        return promise.reject(new Error("No access claimed!"));
+      }
+
+      roots.forEach(function(root) {
+        enqueueTask(function() {
+          return traverseTree(root, processNode, {
+            pushOnly: pushOnly
+          });
+        }, rootCb(root));
       });
     });
   }
@@ -3763,7 +3460,7 @@ define('lib/sync',[
   //   change   - when the local store is updated
   //
   function partialSync(startPath, depth) {
-    return util.makePromise(function(promise) {
+    return util.getPromise(function(promise) {
       if(! isConnected()) {
         return promise.fulfill();
       }
@@ -3773,10 +3470,9 @@ define('lib/sync',[
       enqueueTask(function() {
         logger.info("partial sync started from: " + startPath);
         return traverseTree(startPath, processNode, {
-          depth: depth,
-          force: true
+          depth: depth
         });
-      }, promise.fulfill.bind(promise));
+      }, promise.fulfill);
     });
   }
 
@@ -4031,17 +3727,6 @@ define('lib/sync',[
   // Used as a callback for <traverseTree>.
   function processNode(path, local, remote) {
 
-    //BEGIN-DEBUG
-    function debugEvent(message) {
-      events.emit('debug', {
-        path: path,
-        method: 'processNode',
-        message: message,
-        timestamp: new Date()
-      });
-    }
-    //END-DEBUG
-
     if(! path) {
       throw new Error("Can't process node without a path!");
     }
@@ -4054,48 +3739,30 @@ define('lib/sync',[
 
     if(local.deleted) {
       // outgoing delete!
-      //BEGIN-DEBUG
-      debugEvent('outgoing delete');
-      //END-DEBUG
       action = deleteRemote;
 
     } else if(remote.deleted && local.lastUpdatedAt > 0) {
       if(local.timestamp == local.lastUpdatedAt) {
         // incoming delete!
-        //BEGIN-DEBUG
-        debugEvent('incoming delete');
-        //END-DEBUG
         action = deleteLocal;
 
       } else {
         // deletion conflict!
-        //BEGIN-DEBUG
-        debugEvent('deletion conflict', 'remote', remote, 'local', local);
-        //END-DEBUG
         action = util.curry(fireConflict, 'delete');
 
       }
     } else if(local.timestamp == remote.timestamp) {
       // no action today!
-      //BEGIN-DEBUG
-      debugEvent('no action today', 'remote', remote, 'local', local);
-      //END-DEBUG
       return;
 
     } else if((!remote.timestamp) || local.timestamp > remote.timestamp) {
       // local updated happpened before remote update
       if((!remote.timestamp) || local.lastUpdatedAt == remote.timestamp) {
         // outgoing update!
-        //BEGIN-DEBUG
-        debugEvent('outgoing update');
-        //END-DEBUG
         action = updateRemote;
 
       } else {
         // merge conflict!
-        //BEGIN-DEBUG
-        debugEvent('merge conflict (local > remote)', 'remote', remote, 'local', local);
-        //END-DEBUG
         action = util.curry(fireConflict, 'merge');
 
       }
@@ -4103,16 +3770,10 @@ define('lib/sync',[
       // remote updated happened before local update
       if(local.lastUpdatedAt == local.timestamp) {
         // incoming update!
-        //BEGIN-DEBUG
-        debugEvent('incoming update');
-        //END-DEBUG
         action = updateLocal;
 
       } else {
         // merge conflict!
-        //BEGIN-DEBUG
-        debugEvent('merge conflict (local < remote)', 'remote', remote, 'local', local);
-        //END-DEBUG
         action = util.curry(fireConflict, 'merge');
 
       }
@@ -4232,75 +3893,6 @@ define('lib/sync',[
     }
   }
 
-  function findRoots() {
-    return store.getNode('/').then(function(root) {
-      if(root.startAccess) {
-        return ['/'];
-      } else {
-        return store.getNode('/public/').then(function(publicRoot) {
-          var paths = [];
-          for(var key in root.data) {
-            paths.push('/' + key);
-          }
-          for(var publicKey in publicRoot.data) {
-            paths.push('/public/' + publicKey);
-          }
-          return util.asyncSelect(paths, function(path) {
-            return store.getNode(path).then(function(node) {
-              return !! node.startAccess;
-            });
-          });
-        });
-      }
-    }).then(function(roots) {
-      return roots;
-    });
-  }
-
-  function findAccess(path) {
-    if(! path) {
-      return null;
-    } else {
-      return store.getNode(path).
-        then(function(node) {
-          if(node.startAccess) {
-            return node.startAccess;
-          } else {
-            return findAccess(util.containingDir(path));
-          }
-        });
-    }
-  }
-
-  function findNextForceRoots(path, cachedNode) {
-    logger.debug('findNextForceRoots', path);
-    var roots = [];
-    function checkChildren(node) {
-      return util.asyncEach(Object.keys(node.data), function(key) {
-        return store.getNode(path + key).then(function(childNode) {
-          logger.debug('findNextForceRoots check', path + key, childNode);
-          if(childNode.startForce || childNode.startForceTree) {
-            roots.push(path + key);
-          } else if(util.isDir(key)) {
-            return findNextForceRoots(path + key, childNode).
-              then(function(innerRoots) {
-                innerRoots.forEach(function(innerRoot) {
-                  roots.push(innerRoot);
-                });
-              });
-          }
-        });
-      }).then(function() {
-        logger.debug('findNextForceRoots return', roots);
-        return roots;
-      });
-    }
-    return (
-      cachedNode ? checkChildren(cachedNode) :
-        store.getNode(path).then(checkChildren)
-    );
-  }
-
   // Function: traverseTree
   //
   // Traverse the full tree of nodes, passing each visited data node to the callback for processing.
@@ -4330,61 +3922,7 @@ define('lib/sync',[
 
     if(! opts) { opts = {}; }
 
-    if(opts.depth || opts.depth === 0) {
-      logger.debug("traverse depth", opts.depth, root);
-    }
-
-    //BEGIN-DEBUG
-    function debugEvent(path, message) {
-      events.emit('debug', {
-        path: path,
-        method: 'traverseTree',
-        message: message,
-        timestamp: new Date()
-      });
-    }
-    //END-DEBUG
-
-    function determineLocalInterest(node, options) {
-      logger.debug('traverseNode.determineLocalInterest', node, options);
-      return util.makePromise(function(promise) {
-        options.access = util.highestAccess(options.access, node.startAccess);
-        options.force = opts.force || node.startForce;
-        options.forceTree = opts.forceTree || node.startForceTree;
-
-        function determineForce() {
-          logger.debug('determineForce', options);
-          var force = (options.force || options.forceTree);
-          if((! force) && (options.path == '/' || options.path == '/public/')) {
-            findNextForceRoots(options.path).
-              then(function(roots) {
-                logger.debug('local interest', options.path, node, false, 'next: ', roots);
-                promise.fulfill(node, false, roots);
-              });
-          } else {
-            logger.debug('local interest', options.path, node, force);
-            promise.fulfill(node, force);
-          }
-        }
-
-        if(! options.access) {
-          // in case of a partial sync, we have not been informed about
-          // access inherited from the parent.
-          findAccess(util.containingDir(root)).
-            then(function(access) {
-              options.access = access;
-            }).then(determineForce);
-        } else {
-          determineForce();
-        }
-      });
-    }
-
     function mergeDataNode(path, localNode, remoteNode, options) {
-      //BEGIN-DEBUG
-      debugEvent(path, 'mergeDataNode');
-      //END-DEBUG
-      logger.debug("traverseTree.mergeDataNode", path);
       if(util.isDir(path)) {
         throw new Error("Not a data node: " + path);
       }
@@ -4392,10 +3930,6 @@ define('lib/sync',[
     }
 
     function mergeDirectory(path, localNode, remoteNode, options) {
-      //BEGIN-DEBUG
-      debugEvent(path, 'mergeDirectory');
-      //END-DEBUG
-      logger.debug("traverseTree.mergeDirectory", path, localNode, options);
 
       var fullListing = makeSet(
         Object.keys(localNode.data),
@@ -4407,61 +3941,56 @@ define('lib/sync',[
         var localVersion = localNode.data[key];
         logger.debug("traverseTree.mergeDirectory[" + childPath + "]", remoteVersion, 'vs', localVersion);
         if(remoteVersion !== localVersion) {
-          if(util.isDir(childPath)) {
-            if(options.forceTree && options.depth !== 0) {
-              var childOptions = util.extend({}, options);
-              if(childOptions.depth) {
-                childOptions.depth--;
+          if(caching.cachePath(childPath)) {
+            if(util.isDir(childPath)) {
+              if(options.depth !== 0) {
+                var childOptions = util.extend({}, options);
+                if(childOptions.depth) {
+                  childOptions.depth--;
+                }
+                return mergeTree(childPath, childOptions);
               }
-              return mergeTree(childPath, childOptions);
+            } else {
+              return util.asyncGroup(
+                util.curry(fetchLocalNode, childPath),
+                util.curry(fetchRemoteNode, childPath)
+              ).then(function(nodes, errors) {
+                if(errors.length > 0) {
+                  logger.error("Failed to sync node", childPath, errors);
+                  return store.setNodeError(childPath, errors);
+                } else {
+                  return mergeDataNode(childPath, nodes[0], nodes[1], options);
+                }
+              });
             }
-          } else if(options.force) {
-            return util.asyncGroup(
-              util.curry(fetchLocalNode, childPath),
-              util.curry(fetchRemoteNode, childPath)
-            ).then(function(nodes, errors) {
-              if(errors.length > 0) {
-                logger.error("Failed to sync node", childPath, errors);
-                return store.setNodeError(childPath, errors);
-              } else {
-                return mergeDataNode(childPath, nodes[0], nodes[1], options);
-              }
-            });
           } else {
-            store.touchNode(childPath);
+            return store.touchNode(childPath);
           }
+        }
+      }).then(function(results, errors) {
+        if(errors.length > 0) {
+          logger.error("Failed to sync node", path, errors);
+          return store.setNodeError(path, errors);
         }
       });
     }
 
     function mergeTree(path, options) {
-      //BEGIN-DEBUG
-      debugEvent(path, 'mergeTree');
-      //END-DEBUG
-      logger.debug("traverseTree.mergeTree", path);
       options.path = path;
-      return fetchLocalNode(path).
-        then(util.rcurry(determineLocalInterest, options)).
-        then(function(localNode, localInterest, nextRoots) {
-          if(localInterest) {
-            return fetchRemoteNode(path).
-              then(function(remoteNode) {
-                return mergeDirectory(path, localNode, remoteNode, options).
-                  then(function() {
-                    logger.debug('mergeDirectory done');
-                    return store.setLastSynced(path, remoteNode.timestamp);
-                  });
-              });
-          } else if(nextRoots) {
-            for(var key in nextRoots) {
-              return util.asyncEach(nextRoots, function(root) {
-                return mergeTree(root, options);
-              });
-            }
-          } else {
-            logger.debug("NO INTEREST & NO NEXT ROOTS", path);
-          }
+      if(caching.descendIntoPath(path)) {
+        return util.asyncGroup(
+          util.curry(fetchLocalNode, path),
+          util.curry(fetchRemoteNode, path)
+        ).then(function(nodes) {
+          var localNode = nodes[0];
+          var remoteNode = nodes[1];
+          return mergeDirectory(path, localNode, remoteNode, options).
+            then(util.curry(store.setLastSynced, path, remoteNode.timestamp));
         });
+      } else {
+        // FIXME: do we *need* to return a promise here?
+        return util.getPromise().fulfill();
+      }
     }
 
     return mergeTree(root, opts);
@@ -4497,7 +4026,19 @@ define('lib/sync',[
   });
 
 
-  var sync = util.extend(events, {
+  var sync = util.extend({}, events, {
+
+    get: function(path) {
+      if(caching.cachePath(path)) {
+        return store.getNode(path)
+      } else {
+        return remoteAdapter.get(path);
+      }
+    },
+
+    set: function(path) {},
+
+    remove: function(path) {},
 
     enable: enable,
     disable: disable,
@@ -4533,9 +4074,11 @@ define('lib/sync',[
     // <getState>
     getState: getState,
 
-    // Method: clearSettings
-    // Clear all data from localStorage that this file put there.
-    clearSettings: settings.clear,
+    reset: function() {
+      remoteAdapter.clearCache();
+      settings.clear();
+      events.reset();
+    },
 
     // FOR TESTING INTERNALS ONLY!!!
     getInternal: function(symbol) {
@@ -4544,6 +4087,14 @@ define('lib/sync',[
 
     setRemoteAdapter: function(adapter) {
       remoteAdapter = adapter;
+    },
+
+    setAccess: function(_access) {
+      access = _access;
+    },
+
+    setCaching: function(_caching) {
+      caching = _caching;
     }
 
   });
@@ -5114,6 +4665,8 @@ define('lib/baseClient',[
   var globalEvents = util.getEventEmitter('error');
   var moduleEvents = {};
 
+  var caching;
+
   function extractModuleName(path) {
     if (path && typeof(path) == 'string') {
       var parts = path.split('/');
@@ -5184,7 +4737,7 @@ define('lib/baseClient',[
   });
 
   function failedPromise(error) {
-    return util.getPromise().failLater(error);
+    return util.getPromise().reject(error);
   }
 
   function set(moduleName, path, absPath, value, mimeType) {
@@ -5217,6 +4770,7 @@ define('lib/baseClient',[
 
   /** FROM HERE ON PUBLIC INTERFACE **/
 
+  // FIXME: add option for access mode
   var BaseClient = function(moduleName, isPublic) {
     if(! moduleName) {
       throw new Error("moduleName is required");
@@ -5243,7 +4797,7 @@ define('lib/baseClient',[
   // See <remoteStorage.defineModule> for details.
   //
   //
-  // Most methods here return promises. See the guide for and introduction: <Promises>
+  // Most methods here return promises. See the guide for an introduction: <Promises>
   //
   BaseClient.prototype = {
 
@@ -5299,27 +4853,6 @@ define('lib/baseClient',[
                   (path[0] === '/' ? '' : '/') :
                   '/' + this.moduleName + '/');
       return (this.isPublic ? '/public' + base : base) + path;
-    },
-
-    nodeGivesAccess: function(path, mode) {
-      return store.getNode(path).then(function(node) {
-        var access = (new RegExp(mode)).test(node.startAccess);
-        if(access) {
-          return true;
-        } else if(path.length > 0) {
-          return this.nodeGivesAccess(path.replace(/[^\/]+\/?$/, ''));
-        }
-      }.bind(this));
-    },
-
-    ensureAccess: function(mode) {
-      var path = this.makePath(this.moduleName == 'root' ? '/' : '');
-
-      return this.nodeGivesAccess(path, mode).then(function(access) {
-        if(! access) {
-          throw "Not sufficient access claimed for node at " + path;
-        }
-      });
     },
 
     // Method: lastUpdateOf
@@ -5384,21 +4917,12 @@ define('lib/baseClient',[
     //
     getObject: function(path) {
       var fullPath = this.makePath(path);
-      return this.ensureAccess('r').
-        then(util.curry(store.getNode, fullPath)).
-        then(function(node) {
-          if(node.pending) {
-            return sync.updateDataNode(fullPath);
-          } else {
-            return node;
-          }
-        }).
-        then(function(node) {
-          if(node.mimeType !== 'application/json') {
-            logger.error("WARNING: getObject got called, but retrieved a non-json node at '" + fullPath + "'!");
-          }
-          return node.data;
-        });
+      return sync.get(fullPath).then(function(node) {
+        if(node.mimeType !== 'application/json') {
+          logger.error("WARNING: getObject got called, but retrieved a non-json node at '" + fullPath + "'!");
+        }
+        return node.data;
+      });
     },
 
     //
@@ -5427,34 +4951,15 @@ define('lib/baseClient',[
     //
     getListing: function(path) {
       if(! (util.isDir(path) || path === '')) {
-        return util.getPromise().failLater(
+        return util.getPromise().reject(
           new Error("Not a directory: " + path)
         );
       }
       var fullPath = this.makePath(path);
-      return this.ensureAccess('r').
-        then(util.curry(store.getNode, fullPath)).
-        then(function(node) {
-          if((!node) || node.pending || Object.keys(node.data).length === 0) {
-            return store.isForced(fullPath).
-              then(function(isForced) {
-                if(isForced) {
-                  return node;
-                } else {
-                  return sync.updateDataNode(fullPath).
-                    then(function(node) {
-                      return store.setNodePending(fullPath, new Date().getTime()).
-                        then(function() { return node; });
-                    });
-                }
-              });
-          } else {
-            return node;
-          }
-        }).
-        get('data').then(function(listing) {
-          return listing ? Object.keys(listing) : [];
-        });
+      return sync.get(fullPath).then(function(node) {
+        console.log('getListing got', node);
+        return node.data ? Object.keys(node.data) : [];
+      });
     },
 
     //
@@ -5509,8 +5014,8 @@ define('lib/baseClient',[
       }
 
       return this.getListing(path).
-        then(retrieveObjects.bind(this)).
-        then(filterByType.bind(this));
+        then(util.bind(retrieveObjects, this)).
+        then(util.bind(filterByType, this));
     },
 
     //
@@ -5542,30 +5047,12 @@ define('lib/baseClient',[
     //   (end code)
     getFile: function(path) {
       var fullPath = this.makePath(path);
-      return this.ensureAccess('r').
-        then(util.curry(store.getNode, fullPath)).
-        then(function(node) {
-          if(node.pending) {
-            return sync.updateDataNode(fullPath);
-          } else if(! node.data) {
-            return store.getNode(util.containingDir(fullPath)).
-              then(function(parentNode) {
-                if(parentNode.pending) {
-                  return sync.updateDataNode(fullPath);
-                } else {
-                  return node;
-                }
-              });
-          } else {
-            return node;
-          }
-        }).
-        then(function(node) {
-          return {
-            mimeType: node.mimeType,
-            data: node.data
-          };
-        });
+      return sync.get(fullPath).then(function(node) {
+        return {
+          mimeType: node.mimeType,
+          data: node.data
+        };
+      });
     },
 
     // Method: getDocument
@@ -5586,8 +5073,7 @@ define('lib/baseClient',[
     //
     remove: function(path) {
       var absPath = this.makePath(path);
-      return this.ensureAccess('w').
-        then(util.curry(set, this.moduleName, path, absPath, undefined)).
+      return set(this.moduleName, path, absPath, undefined).
         then(util.curry(sync.partialSync, util.containingDir(absPath), 1));
     },
 
@@ -5672,17 +5158,14 @@ define('lib/baseClient',[
 
       var absPath = this.makePath(path);
 
-      return this.ensureAccess('w').
-        then(function() {
-          if(! (obj instanceof Array)) {
-            obj['@context'] = this.resolveType(typeAlias);
-            var errors = this.validateObject(obj);
-            if(errors) {
-              throw new ValidationError(obj, errors);
-            }
-          }
-          return set(this.moduleName, path, absPath, obj, 'application/json')
-        }.bind(this)).
+      if(! (obj instanceof Array)) {
+        obj['@context'] = this.resolveType(typeAlias);
+        var errors = this.validateObject(obj);
+        if(errors) {
+          throw new ValidationError(obj, errors);
+        }
+      }
+      return set(this.moduleName, path, absPath, obj, 'application/json').
         then(util.curry(sync.partialSync, util.containingDir(absPath), 1));
     },
 
@@ -5741,6 +5224,12 @@ define('lib/baseClient',[
     //
     storeFile: function(mimeType, path, data, cache) {
       cache = (cache !== false);
+      if(typeof(mimeType) !== 'string') {
+        return failedPromise(new Error("given mimeType must be a string (got: " + typeof(mimeType) + ")"));
+      }
+      if(typeof(path) !== 'string') {
+        return failedPromise(new Error("given path must be a string (got: " + typeof(path) + ")"));
+      }
       if(util.isDir(path)) {
         return failedPromise(new Error("Can't store directory node"));
       }
@@ -5748,20 +5237,15 @@ define('lib/baseClient',[
         return failedPromise(new Error("storeFile received " + typeof(data) + ", but expected a string or an ArrayBuffer!"));
       }
       var absPath = this.makePath(path);
-      return this.ensureAccess('w').
-        then(function() {
-          if(cache) {
-            return set(this.moduleName, path, absPath, data, mimeType).
-              then(util.curry(sync.partialSync, util.containingDir(absPath), 1));
-          } else {
-            return sync.updateDataNode(absPath, {
-              mimeType: mimeType,
-              data: data
-            }).then(function() {
-              return store.setNodePending(absPath, new Date().getTime());
-            });
-          }
+      if(cache) {
+        return set(this.moduleName, path, absPath, data, mimeType).
+          then(util.curry(sync.partialSync, util.containingDir(absPath), 1));
+      } else {
+        return sync.updateDataNode(absPath, {
+          mimeType: mimeType,
+          data: data
         });
+      }
     },
 
     // Method: storeDocument
@@ -5800,7 +5284,7 @@ define('lib/baseClient',[
       var previousTreeForce = store.getNode(path).startForceTree;
       this.use(path, false);
       return sync.partialSync(path, 1).
-        then(function() {
+        then(util.bind(function() {
           if(previousTreeForce) {
             this.use(path, true);
           } else {
@@ -5809,40 +5293,42 @@ define('lib/baseClient',[
           if(callback) {
             callback();
           }
-        }.bind(this));
+        }, this));
 
     },
 
     //
     // Method: use
     //
-    // Set force flags on given path.
+    // Enable local caching for given path.
     //
-    // See <sync> for details.
+    // Opposite of <release>.
     //
     // Parameters:
     //   path      - path relative to the module root
-    //   treeOnly  - boolean value, whether only the tree should be synced.
+    //   skipData  - (optional) don't store actual data, only metadata
     //
-    // Returns a promise.
-    use: function(path, treeOnly) {
-      var absPath = this.makePath(path);
-      return store.setNodeForce(absPath, !treeOnly, true);
+    use: function(path, skipData) {
+      caching.set(this.makePath(path), {
+        data: !skipData
+      });
+      // returned promise is deprecated!!!
+      return util.getPromise().fulfill();
     },
 
     // Method: release
     //
-    // Remove force flags from given node.
+    // Disable local caching on given path.
     //
-    // See <sync> for details.
+    // Opposite of <use>.
     //
     // Parameters:
     //   path      - path relative to the module root
     //
-    // Returns a promise.
     release: function(path) {
-      var absPath = this.makePath(path);
-      return store.setNodeForce(absPath, false, false);
+      caching.remove(this.makePath(path));
+      // returned promise is deprecated!!!
+      return util.getPromise().fulfill();
     },
 
     // Method: hasDiff
@@ -5857,12 +5343,12 @@ define('lib/baseClient',[
         item = util.baseName(absPath);
         absPath = util.containingDir(absPath);
       }
-      return store.getNode(absPath).get('diff').
-        then(function(diff) {
+      return store.getNode(absPath).
+        then(function(node) {
           if(item) {
-            return !! diff[item];
+            return !! node.diff[item];
           } else {
-            return Object.keys(diff).length > 0;
+            return Object.keys(node.diff).length > 0;
           }
         });
     },
@@ -6041,6 +5527,10 @@ define('lib/baseClient',[
   };
 
   util.extend(BaseClient, globalEvents);
+
+  BaseClient.setCaching = function(_caching) {
+    caching = _caching;
+  };
 
   return BaseClient;
 
@@ -6837,12 +6327,13 @@ define('lib/widget',[
   './webfinger',
   './wireClient',
   './sync',
+  './store',
   './schedule',
   './baseClient',
   './platform',
   './getputdelete',
   './widget/default'
-], function(util, webfinger, wireClient, sync, schedule, BaseClient,
+], function(util, webfinger, wireClient, sync, store, schedule, BaseClient,
             platform, getputdelete, defaultView) {
 
   // Namespace: widget
@@ -6929,26 +6420,30 @@ define('lib/widget',[
     events.emit('state', state);    
   }
 
-  function buildScopeRequest() {
-    var scopes = remoteStorage.claimedModules;
-    return Object.keys(remoteStorage.claimedModules).map(function(module) {
-      return (module === 'root' && remoteStorage.getStorageType() === '2012.04' ? '' : module) + ':' + scopes[module];
-    }).join(' ');
-  }
-
   function requestToken(authEndpoint) {
     logger.info('requestToken', authEndpoint);
-    var redirectUri = view.getLocation().split('#')[0];
+    var redirectUri = (widgetOptions.redirectUri || view.getLocation());
+    var state;
+    var md = redirectUri.match(/^(.+)#(.*)$/);
+    if(md) {
+      redirectUri = md[1];
+      state = md[2];
+    }
     var clientId = util.hostNameFromUri(redirectUri);
     authEndpoint += authEndpoint.indexOf('?') > 0 ? '&' : '?';
-    authEndpoint += [
+    var params = [
       ['redirect_uri', redirectUri],
       ['client_id', clientId],
-      ['scope', buildScopeRequest()],
+      ['scope', remoteStorage.access.scopeParameter],
       ['response_type', 'token']
-    ].map(function(kv) {
+    ];
+    if(typeof(state) === 'string' && state.length > 0) {
+      params.push(['state', state]);
+    }
+    authEndpoint += params.map(function(kv) {
       return kv[0] + '=' + encodeURIComponent(kv[1]);
     }).join('&');
+    console.log('redirecting to', authEndpoint);
     return view.redirectTo(authEndpoint);
   }
 
@@ -6962,8 +6457,10 @@ define('lib/widget',[
         }
         setState((typeof(error) === 'string') ? 'typing' : 'error', error);
       }).
-      get('properties').get('auth-endpoint').
-      then(requestToken).
+      then(function(storageInfo) {
+        remoteStorage.access.setStorageType(storageInfo.type);
+        return requestToken(storageInfo.properties['auth-endpoint']);
+      }).
       then(schedule.enable, util.curry(setState, 'error'));
   }
 
@@ -7013,6 +6510,10 @@ define('lib/widget',[
         view.setUserAddress(userAddress);
       }
     }
+    // Query parameter: state
+    if(params.state) {
+      view.setLocation(view.getLocation().split('#')[0] + '#' + params.state);
+    }
   }
 
   function handleSyncError(error) {
@@ -7041,11 +6542,16 @@ define('lib/widget',[
   }
 
   function initialSync() {
-    setState('busy', true);
-    sync.fullSync().then(function() {
-      schedule.enable();
-      events.emit('ready');
-    }, handleSyncError);
+    if(settings.get('initialSyncDone')) {
+      store.fireInitialEvents();
+    } else {
+      setState('busy', true);
+      sync.fullSync().then(function() {
+        schedule.enable();
+        settings.set('initialSyncDone', true);
+        events.emit('ready');
+      }, handleSyncError);
+    }
   }
 
   function display(_remoteStorage, element, options) {
@@ -7053,10 +6559,6 @@ define('lib/widget',[
     widgetOptions = options;
     if(! options) {
       options = {};
-    }
-
-    if(Object.keys(remoteStorage.claimedModules).length === 0) {
-      throw new Error("displayWidget called, but no access claimed! Make sure to call displayWidget after remoteStorage.claimAccess is done.");
     }
 
     options.getLastSyncAt = function() {
@@ -7252,7 +6754,7 @@ define('lib/foreignClient',['./util', './baseClient', './getputdelete', './store
     },
 
     getPublishedObjects: function(moduleName, callback) {
-      this.getPublished(moduleName, function(list) {
+      this.getPublished(moduleName, util.bind(function(list) {
         var paths = Object.keys(list);
         var i = 0;
         var objects = {};
@@ -7260,18 +6762,18 @@ define('lib/foreignClient',['./util', './baseClient', './getputdelete', './store
           if(i < paths.length) {
             var key = paths[i++];
             var path = '/' + moduleName + '/' + key;
-            this.getObject(path, function(object) {
+            this.getObject(path, util.bind(function(object) {
               objects[path] = object;
                 
               loadOne.call(this);
-            }.bind(this));
+            }, this));
           } else {
             callback(objects);
           }
         }
 
         loadOne.call(this);
-      }.bind(this));
+      }, this));
     },
 
     makePath: function(path) {
@@ -7318,6 +6820,179 @@ define('lib/foreignClient',['./util', './baseClient', './getputdelete', './store
 
 });
 
+define('lib/access',[], function() {
+
+  var Access = function() {
+    this.reset();
+
+    this.__defineGetter__('scopes', function() {
+      return Object.keys(this._scopeModeMap);
+    });
+
+    this.__defineGetter__('scopeParameter', function() {
+      return this.scopes.map(function(module) {
+        return (module === 'root' && this.storageType === '2012.04' ? '' : module) + ':' + this.get(module);
+      }.bind(this)).join(' ');
+    });
+  };
+
+  Access.prototype = {
+    // not sure yet, if 'set' or 'claim' is better...
+
+    claim: function() {
+      this.set.apply(this, arguments);
+    },
+
+    set: function(scope, mode) {
+      this._adjustRootPaths(scope);
+      this._scopeModeMap[scope] = mode;
+    },
+
+    get: function(scope) {
+      return this._scopeModeMap[scope];
+    },
+
+    check: function(scope, mode) {
+      var actualMode = this.get(scope);
+      return actualMode && (mode === 'r' || actualMode === 'rw');
+    },
+
+    reset: function() {
+      this.rootPaths = [];
+      this._scopeModeMap = {};
+    },
+
+    _adjustRootPaths: function(newScope) {
+      if('root' in this._scopeModeMap || newScope === 'root') {
+        this.rootPaths = ['/'];
+      } else if(! (newScope in this._scopeModeMap)) {
+        this.rootPaths.push('/' + newScope + '/');
+        this.rootPaths.push('/public/' + newScope + '/');
+      }
+    },
+
+    setStorageType: function(type) {
+      this.storageType = type;
+    }
+  };
+
+  return Access;
+
+});
+
+define('lib/caching',['./util'], function(util) {
+
+  var Caching = function() {
+    this.reset();
+  };
+
+  Caching.prototype = {
+
+    /**
+     ** configuration methods
+     **/
+
+    get: function(path) {
+      this._validateDirPath(path);
+      return this._pathSettingsMap[path];
+    },
+
+    set: function(path, settings) {
+      this._validateDirPath(path);
+      if(typeof(settings) !== 'object') {
+        throw new Error("settings is required");
+      }
+      this._pathSettingsMap[path] = settings;
+      this._updateRoots();
+    },
+
+    remove: function(path) {
+      this._validateDirPath(path);
+      delete this._pathSettingsMap[path];
+      this._updateRoots();
+    },
+
+    reset: function() {
+      this.rootPaths = [];
+      this._pathSettingsMap = {};
+    },
+
+    /**
+     ** query methods
+     **/
+
+    // Method: descendIntoPath
+    //
+    // Checks if the given directory path should be followed.
+    //
+    // Returns: true or false
+    descendIntoPath: function(path) {
+      this._validateDirPath(path);
+      return !! this._query(path);
+    },
+
+    // Method: cachePath
+    //
+    // Checks if given path should be cached.
+    //
+    // Returns: true or false
+    cachePath: function(path) {
+      this._validatePath(path);
+      var settings = this._query(path);
+      return settings && (util.isDir(path) || settings.data);
+    },
+
+    /**
+     ** private methods
+     **/
+
+    // gets settings for given path. walks up the path until it finds something.
+    _query: function(path) {
+      return this._pathSettingsMap[path] ||
+        path !== '/' &&
+        this._query(util.containingDir(path));
+    },
+
+    _validatePath: function(path) {
+      if(typeof(path) !== 'string') {
+        throw new Error("path is required");
+      }
+    },
+
+    _validateDirPath: function(path) {
+      this._validatePath(path);
+      if(! util.isDir(path)) {
+        throw new Error("not a directory path: " + path);
+      }
+    },
+
+    _updateRoots: function() {
+      var roots = {}
+      for(var a in this._pathSettingsMap) {
+        // already a root
+        if(roots[a]) {
+          continue;
+        }
+        var added = false;
+        for(var b in this._pathSettingsMap) {
+          if(util.pathContains(a, b)) {
+            roots[b] = true;
+            added = true;
+            break;
+          }
+        }
+        if(! added) {
+          roots[a] = true;
+        }
+      }
+      this.rootPaths = Object.keys(roots);
+    },
+
+  };
+
+  return Caching;
+});
+
 define('remoteStorage',[
   'require',
   './lib/widget',
@@ -7330,20 +7005,43 @@ define('remoteStorage',[
   './lib/foreignClient',
   './lib/baseClient',
   './lib/schedule',
-  './lib/i18n'
-], function(require, widget, store, sync, wireClient, nodeConnect, util, webfinger, foreignClient, BaseClient, schedule, i18n) {
+  './lib/i18n',
+  './lib/access',
+  './lib/caching'
+], function(require, widget, store, sync, wireClient, nodeConnect, util, webfinger, foreignClient, BaseClient, schedule, i18n, Access, Caching) {
 
   
 
-  var claimedModules = {}, modules = {}, moduleNameRE = /^[a-z\-]+$/;
+  var modules = {}, moduleNameRE = /^[a-z\-]+$/;
 
   var logger = util.getLogger('base');
 
   util.silenceAllLoggers();
   util.unsilenceLogger('base', 'getputdelete');
 
+  function deprecate(thing, replacement) {
+    console.log("WARNING: " + thing + " is deprecated, " + (replacement ? "use " + replacement + " instead." : "without replacement."));
+  }
+
+  var _access = new Access();
+  var _caching = new Caching();
+
+  sync.setAccess(_access);
+  sync.setCaching(_caching);
+  BaseClient.setCaching(_caching);
+
   // Namespace: remoteStorage
-  var remoteStorage =  {
+  //
+  // Main remoteStorage object, primary namespace.
+  //
+  // Provides an interface for defining modules, controlling the widget and configuring
+  // access.
+  //
+  // Most methods here return promises. See the guide for an introduction: <Promises>
+  var remoteStorage = {
+
+    access: _access,
+    caching: _caching,
 
     //
     // Method: defineModule
@@ -7377,7 +7075,7 @@ define('remoteStorage',[
     //       exports: {
     //
     //         addBeer: function(name) {
-    //           privateClient.storeObject('beer', nameToKey(name), {
+    //           return privateClient.storeObject('beer', nameToKey(name), {
     //             name: name,
     //             drinkCount: 0
     //           });
@@ -7385,15 +7083,17 @@ define('remoteStorage',[
     //
     //         logDrink: function(name) {
     //           var key = nameToKey(name);
-    //           var beer = privateClient.getObject(key);
-    //           beer.drinkCount++;
-    //           privateClient.storeObject('beer', key, beer);
+    //           return privateClient.getObject(key).then(function(beer) {
+    //             beer.drinkCount++;
+    //             return privateClient.storeObject('beer', key, beer);
+    //           });
     //         },
     //
     //         publishBeer: function(name) {
     //           var key = nameToKey(name);
-    //           var beer = privateClient.getObject(key);
-    //           publicClient.storeObject('beer', key, beer);
+    //           return privateClient.getObject(key).then(function(beer) {
+    //             return publicClient.storeObject('beer', key, beer);
+    //           });
     //         }
     //
     //       }
@@ -7404,9 +7104,11 @@ define('remoteStorage',[
     //
     //   remoteStorage.claimAccess('beers', 'rw');
     //
-    //   remoteStorage.displayWidget(/* see documentation */);
+    //   remoteStorage.displayWidget();
     //
-    //   remoteStorage.beers.addBeer('<replace-with-favourite-beer-kind>');
+    //   remoteStorage.on('ready', function() {
+    //     remoteStorage.beers.addBeer('<replace-with-favourite-beer-kind>');
+    //   });
     //
     //   (end code)
     //
@@ -7432,8 +7134,6 @@ define('remoteStorage',[
       this[moduleName] = module.exports;
     },
 
-    claimedModules: claimedModules,
-
     //
     // Method: getModuleList
     //
@@ -7455,7 +7155,8 @@ define('remoteStorage',[
     //   Array of module names.
     //
     getClaimedModuleList: function() {
-      return Object.keys(claimedModules);
+      deprecate('getClaimedModuleList', 'access.scopes');
+      return this.access.scopes;
     },
 
     //
@@ -7496,7 +7197,13 @@ define('remoteStorage',[
     //   Hope this helps.
     //
     getModuleInfo: function(moduleName) {
-      return modules[moduleName];
+      var moduleInfo = modules[moduleName];
+      if(moduleInfo) {
+        return util.extend({
+          name: moduleName,
+          dataHints: {}
+        }, moduleInfo);
+      }
     },
 
     //
@@ -7522,9 +7229,12 @@ define('remoteStorage',[
     //   claim      - permission to claim, either *r* (read-only) or *rw* (read-write)
     //
     // Example:
-    //   > remoteStorage.claimAccess('contacts', 'r');
+    //   > remoteStorage.claimAccess('contacts', 'r').then(remoteStorage.displayWidget).then(initApp);
     //
+    // Returns:
+    //   A Promise, fulfilled when the access has been claimed.
     //
+    // FIXME: this method is currently asynchronous due to internal design issues, but it doesn't need to be.
     //
     // Method: claimAccess(moduleClaimMap)
     //
@@ -7538,7 +7248,12 @@ define('remoteStorage',[
     //   >   contacts: 'r',
     //   >   documents: 'rw',
     //   >   money: 'r'
-    //   > });
+    //   > }).then(remoteStorage.displayWidget).then(initApp);
+    //
+    // Returns:
+    //   A Promise, fulfilled when the access has been claimed.
+    //
+    // FIXME: this method is currently asynchronous due to internal design issues, but it doesn't need to be.
     //
     claimAccess: function(moduleName, mode) {
 
@@ -7558,11 +7273,14 @@ define('remoteStorage',[
         moduleObj[moduleName] = mode;
       }
 
-      return util.asyncEach(Object.keys(moduleObj), function(_moduleName) {
+      Object.keys(moduleObj).forEach(util.bind(function(_moduleName) {
         var _mode = moduleObj[_moduleName];
         testMode(_moduleName, _mode);
         return this.claimModuleAccess(_moduleName, _mode);
-      }.bind(this));
+      }, this));
+
+      // returned promise is deprecated!!!
+      return util.getPromise().fulfill();
     },
 
     // PRIVATE
@@ -7572,23 +7290,20 @@ define('remoteStorage',[
         throw "Module not defined: " + moduleName;
       }
 
-      if(moduleName in claimedModules) {
+      if(this.access.get(moduleName)) {
+        console.log('claimModuleAccess bailing', moduleName);
         return;
       }
 
-      claimedModules[moduleName] = mode;
-
       if(moduleName === 'root') {
-        moduleName = '';
-        return store.setNodeAccess('/', mode).
-          then(util.curry(store.setNodeForce, '/', true, true));
+        this.access.set(moduleName, mode);
+        this.caching.set('/', { data: true });
       } else {
         var privPath = '/'+moduleName+'/';
         var pubPath = '/public/'+moduleName+'/';
-        return store.setNodeAccess(privPath, mode).
-          then(util.curry(store.setNodeForce, privPath, true, true)).
-          then(util.curry(store.setNodeAccess, pubPath, mode)).
-          then(util.curry(store.setNodeForce, pubPath, true, true));
+        this.access.set(moduleName, mode);
+        this.caching.set(privPath, { data: true });
+        this.caching.set(pubPath, { data: true }); 
       }
     },
 
@@ -7609,7 +7324,9 @@ define('remoteStorage',[
     // Forget this ever happened.
     //
     // Delete all locally stored data.
-    // This doesn't clear localStorage, just removes everything
+    //
+    // Note that if you're using a localStorage backend, this doesn't
+    // clear the entire localStorage, but just removes everything
     // remoteStorage.js saved there. Other data your app might
     // have put into localStorage stays there.
     //
@@ -7621,24 +7338,27 @@ define('remoteStorage',[
     //   > remoteStorage.flushLocal();
     //
     flushLocal       : function() {
-      return util.makePromise(function(promise) {
+      return util.getPromise(function(promise) {
         logger.info('flushLocal');
-        store.forgetAll().then(promise.fulfill.bind(promise));
-        sync.clearSettings();
+        sync.reset();
         widget.clearSettings();
         schedule.reset();
         wireClient.disconnectRemote();
         i18n.clearSettings();
-        claimedModules = {};
-      });
+        this.access.reset();
+        this.caching.reset();
+        store.forgetAll().then(promise.fulfill);
+      }.bind(this));
     },
+
+    wireClient: wireClient,
 
     //
     // Method: fullSync
     //
     // Synchronize local <-> remote storage.
     //
-    // Syncing starts at the access roots (the once you claimed using claimAccess)
+    // Syncing starts at the access roots (the ones you claimed using claimAccess)
     // and moves down the directory tree.
     // Only nodes with a 'force' flag on themselves or one of their ancestors will
     // be synchronized. Use <BaseClient.use> and <BaseClient.release> to set / unset
@@ -7647,8 +7367,11 @@ define('remoteStorage',[
     // future, so you should attach change handlers on the modules you're
     // interested in.
     //
-    // Parameters:
-    //   callback - (optional) callback to be notified when synchronization has finished or failed.
+    // Returns:
+    //   A Promise.
+    //
+    // If you are interested when the sync is done, or if there were any errors,
+    // chain to the promise as shown below.
     //
     // Example:
     //   >
@@ -7658,16 +7381,36 @@ define('remoteStorage',[
     //   >   // handle change event (update UI etc)
     //   > });
     //   >
-    //   > remoteStorage.fullSync(function(errors) {
-    //   >   // handle errors, if any.
+    //   > remoteStorage.fullSync().then(function() {
+    //   >   // sync done, do whatever you want.
+    //   > }, function(error) {
+    //   >   // handle error.
     //   > });
-    //
-    // Yields:
-    //   Array of error messages - when errors occured. When fullSync is called and the user is not connected, this is also considered an error.
-    //   null - no error occured, synchronization finished gracefully.
     //
     fullSync: sync.fullSync,
 
+    //
+    // Method: setWidgetView
+    //
+    // Set the view object to use by the widget. By default remoteStorage.js uses it's
+    // own default view. The default view is designed to work in a browser. If you
+    // are using any other platform, you need to implement your own view. See the
+    // interface documentation for <WidgetView> for a description of the methods and
+    // and events the view should implement.
+    //
+    // Example:
+    //   >
+    //   > var myView = {
+    //   >   display: function() {
+    //   >     // render the widget (or whatever)
+    //   >   },
+    //   >   // (...)
+    //   > };
+    //   >
+    //   > remoteStorage.setWidgetView(myView);
+    //   >
+    //   > // claim access, display widget etc.
+    //
     setWidgetView: widget.setView,
 
     //
@@ -7687,16 +7430,24 @@ define('remoteStorage',[
     },
 
     //
-    // Method: onWidget
+    // Method: on
     //
-    // Add event handler to the widget.
+    // Add event handler. Event handlers are bound on the <widget>, which
+    // acts as a controller.
     // See <widget.Events> for available Events.
     //
     // Parameters:
     //   eventType - type of event to add handler to
     //   handler   - handler function
     //
-    onWidget: widget.on,
+    on: widget.on,
+
+    // Method: onWidget
+    // DEPRECATED. Alias for <on>.
+    onWidget: function() {
+      console.log("WARNING: remoteStorage.onWidget is deprecated, use remoteStorage.on instead.");
+      this.on.apply(this, arguments);
+    },
 
     //
     getSyncState: sync.getState,
@@ -7770,9 +7521,18 @@ define('remoteStorage',[
 
     i18n: i18n,
 
-    schedule: schedule
+    schedule: schedule,
+
+    // for tests only.
+    // FIXME: get rid of this by making internas more accessible. can probably be
+    //        done with some general redesign of this file.
+    _clearModules: function() {
+      modules = {};
+    }
 
   };
+
+  util.bindAll(remoteStorage);
 
   return remoteStorage;
 });
